@@ -4,8 +4,7 @@
 //!               [--bench SECONDS] [--screenshot out.png] [--fog start,end] [--chunk METRES]
 //! Interactive: WASD move, Q/E down/up, Shift fast, mouse look, Esc quit.
 
-mod renderer;
-mod shaders;
+use p2gles::renderer;
 
 use bevy_math::{Mat4, Vec3};
 use glutin::config::{Api, ConfigTemplateBuilder, GlConfig};
