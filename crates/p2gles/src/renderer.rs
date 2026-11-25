@@ -58,10 +58,18 @@ struct Chunk {
     hi: Vec3,
 }
 
+/// `glDrawRangeElements` (glow 0.17 has no wrapper), loaded by main.rs from the EGL display.
+pub type DrawRangeElementsFn = unsafe extern "system" fn(u32, u32, u32, i32, u32, *const std::ffi::c_void);
+pub static DRAW_RANGE_ELEMENTS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 struct Draw {
     key: Key,
     first: i32, // first index
     count: i32,
+    /// Vertex index range of this draw: passed to glDrawRangeElements so the driver does not scan
+    /// the index buffer on the CPU (Panfrost spent ~88% of the frame doing that).
+    vmin: u32,
+    vmax: u32,
     lo: Vec3,
     hi: Vec3,
     centre: Vec3,
@@ -100,9 +108,14 @@ fn pack(c: f32) -> u8 {
 
 pub struct Renderer {
     gl: glow::Context,
-    prog: glow::Program,
+    /// [0] no discard (opaque, splat, blended), [1] alpha-tested (masked pass).
+    progs: [glow::Program; 2],
     vao: glow::VertexArray,
     draws: Vec<Draw>,
+    /// One index buffer per draw record (`P2GLES_ONE_IBO=1`: one shared buffer). Panfrost caches
+    /// index min/max per buffer in a small cache; with one shared buffer for ~240 draws the cache
+    /// thrashed and the driver rescanned the index ranges on the CPU every frame (~88% of a frame).
+    ibos: Vec<Option<glow::Buffer>>,
     order: [Vec<usize>; 4],
     textures: HashMap<u32, glow::Texture>,
     lightmaps: HashMap<u32, glow::Texture>,
@@ -112,7 +125,7 @@ pub struct Renderer {
     pub fog_color: [f32; 3],
     no_cull: bool,
     pub stats: Stats,
-    u: Uniforms,
+    us: [Uniforms; 2],
     pub total_tris: u64,
 }
 
@@ -132,7 +145,10 @@ struct Uniforms {
     use_alpha: glow::UniformLocation,
     fog: glow::UniformLocation,
     fog_color: glow::UniformLocation,
+    has_atest: bool,
 }
+
+pub static MIPS_GENERATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8]], repeat: bool, aniso: bool) -> glow::Texture {
     unsafe {
@@ -154,15 +170,27 @@ unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8]], repeat:
         if n == 0 {
             return t;
         }
-        let want_mips = mips.len() > 1;
-        if want_mips {
+        // Full chain down to 1x1? Packages often ship a partial chain (or none): sampling a
+        // large texture minified without mips thrashes the texture cache (Mali-G31: the frame
+        // cost barely dropped at quarter resolution). Generate the missing levels on the GPU.
+        let full = 32 - w.max(h).leading_zeros() as i32;
+        let gen_mips = n < full && std::env::var_os("P2GLES_NO_GENMIPS").is_none();
+        if gen_mips {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            gl.generate_mipmap(glow::TEXTURE_2D);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+            MIPS_GENERATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if n > 1 {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, n - 1);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
-            if aniso {
-                gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, 8.0); // TEXTURE_MAX_ANISOTROPY_EXT
-            }
         } else {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        }
+        // Anisotropic filtering costs up to 8 texture fetches per pixel: opt-in (P2GLES_ANISO=N).
+        if n > 1 || gen_mips {
+            if let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso) {
+                gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a); // TEXTURE_MAX_ANISOTROPY_EXT
+            }
         }
         t
     }
@@ -173,27 +201,38 @@ impl Renderer {
         let t0 = std::time::Instant::now();
         let ext_aniso = gl.supported_extensions().contains("GL_EXT_texture_filter_anisotropic");
         unsafe {
-            // Program.
-            let prog = gl.create_program().unwrap();
-            for (ty, src) in [(glow::VERTEX_SHADER, VS), (glow::FRAGMENT_SHADER, FS)] {
-                let s = gl.create_shader(ty).unwrap();
-                gl.shader_source(s, src);
-                gl.compile_shader(s);
-                if !gl.get_shader_compile_status(s) {
-                    panic!("shader: {}", gl.get_shader_info_log(s));
+            // Programs: the same shader with and without the alpha-test discard.
+            let build = |masked: bool| -> (glow::Program, Uniforms) {
+                let prog = gl.create_program().unwrap();
+                let fs = if masked { FS.replacen("#version 300 es\n", "#version 300 es\n#define ALPHA_TEST 1\n", 1) } else { FS.to_string() };
+                for (ty, src) in [(glow::VERTEX_SHADER, VS.to_string()), (glow::FRAGMENT_SHADER, fs)] {
+                    let s = gl.create_shader(ty).unwrap();
+                    gl.shader_source(s, &src);
+                    gl.compile_shader(s);
+                    if !gl.get_shader_compile_status(s) {
+                        panic!("shader: {}", gl.get_shader_info_log(s));
+                    }
+                    gl.attach_shader(prog, s);
                 }
-                gl.attach_shader(prog, s);
-            }
-            gl.link_program(prog);
-            if !gl.get_program_link_status(prog) {
-                panic!("link: {}", gl.get_program_info_log(prog));
-            }
-            gl.use_program(Some(prog));
-            let loc = |n: &str| gl.get_uniform_location(prog, n).unwrap_or_else(|| panic!("uniform {n}"));
-            let u = Uniforms { vp: loc("uVP"), cam: loc("uCam"), mode: loc("uMode"), cst: loc("uConst"), atest: loc("uAlphaTest"), fopaque: loc("uForceOpaque"), use_alpha: loc("uUseAlphaMap"), fog: loc("uFog"), fog_color: loc("uFogColor") };
-            gl.uniform_1_i32(Some(&loc("uTex")), 0);
-            gl.uniform_1_i32(Some(&loc("uLm")), 1);
-            gl.uniform_1_i32(Some(&loc("uAlphaMap")), 2);
+                gl.link_program(prog);
+                if !gl.get_program_link_status(prog) {
+                    panic!("link: {}", gl.get_program_info_log(prog));
+                }
+                gl.use_program(Some(prog));
+                let loc = |n: &str| gl.get_uniform_location(prog, n);
+                let req = |n: &str| loc(n).unwrap_or_else(|| panic!("uniform {n}"));
+                // uAlphaTest is optimised out of the program without discard: use a dummy location then.
+                let atest = loc("uAlphaTest").unwrap_or_else(|| req("uForceOpaque"));
+                let u = Uniforms { vp: req("uVP"), cam: req("uCam"), mode: req("uMode"), cst: req("uConst"), atest, fopaque: req("uForceOpaque"), use_alpha: req("uUseAlphaMap"), fog: req("uFog"), fog_color: req("uFogColor"), has_atest: masked };
+                gl.uniform_1_i32(Some(&req("uTex")), 0);
+                if let Some(l) = loc("uLm") { gl.uniform_1_i32(Some(&l), 1); }
+                if let Some(l) = loc("uAlphaMap") { gl.uniform_1_i32(Some(&l), 2); }
+                (prog, u)
+            };
+            let (p0, u0) = build(false);
+            let (p1, u1) = build(true);
+            let progs = [p0, p1];
+            let us = [u0, u1];
 
             // ------------- bake -------------
             let mut baker = Baker { chunks: HashMap::new(), cell: opts.chunk };
@@ -293,7 +332,7 @@ impl Renderer {
                 verts.extend_from_slice(&ch.verts);
                 idx.extend(ch.idx.iter().map(|i| i + base));
                 total_tris += ch.idx.len() as u64 / 3;
-                draws.push(Draw { key, first, count: ch.idx.len() as i32, lo: ch.lo, hi: ch.hi, centre: (ch.lo + ch.hi) * 0.5 });
+                draws.push(Draw { key, first, count: ch.idx.len() as i32, vmin: base, vmax: base + ch.verts.len() as u32 - 1, lo: ch.lo, hi: ch.hi, centre: (ch.lo + ch.hi) * 0.5 });
             }
             let mut order: [Vec<usize>; 4] = Default::default();
             for (i, d) in draws.iter().enumerate() {
@@ -307,6 +346,17 @@ impl Renderer {
             let ibo = gl.create_buffer().unwrap();
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(idx.as_ptr() as *const u8, idx.len() * 4), glow::STATIC_DRAW);
+            let mut ibos: Vec<Option<glow::Buffer>> = vec![None; draws.len()];
+            if std::env::var_os("P2GLES_ONE_IBO").is_none() {
+                for (i, d) in draws.iter().enumerate() {
+                    let b = gl.create_buffer().unwrap();
+                    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b));
+                    let sl = &idx[d.first as usize..(d.first + d.count) as usize];
+                    gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(sl.as_ptr() as *const u8, sl.len() * 4), glow::STATIC_DRAW);
+                    ibos[i] = Some(b);
+                }
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+            }
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, VSIZE, 0);
             gl.enable_vertex_attrib_array(1);
@@ -354,7 +404,7 @@ impl Renderer {
                 }
             }
             let white = upload_tex(&gl, 1, 1, &[&[153, 153, 153, 255]], true, false);
-            println!("textures: {} diffuse, {} lightmaps, {} alpha maps uploaded in {} ms", textures.len(), lightmaps.len(), alphas.len(), t1.elapsed().as_millis());
+            println!("textures: {} diffuse ({} with generated mips), {} lightmaps, {} alpha maps uploaded in {} ms", textures.len(), MIPS_GENERATED.load(std::sync::atomic::Ordering::Relaxed), lightmaps.len(), alphas.len(), t1.elapsed().as_millis());
 
             let fog = opts.fog.or(data.zone.as_ref().and_then(|z| z.fog).map(|(_, s, e)| (s, e))).unwrap_or((250.0, 1400.0));
             let fog_color = data.zone.as_ref().and_then(|z| z.fog).map(|(c, _, _)| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]).unwrap_or([0.55, 0.68, 0.85]);
@@ -363,7 +413,7 @@ impl Renderer {
             gl.enable(glow::CULL_FACE);
             gl.cull_face(glow::BACK);
             gl.front_face(glow::CCW);
-            Renderer { gl, prog, vao, draws, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), u, total_tris }
+            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris }
         }
     }
 
@@ -405,12 +455,14 @@ impl Renderer {
             gl.disable(glow::BLEND);
             gl.clear_color(self.fog_color[0], self.fog_color[1], self.fog_color[2], 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            gl.use_program(Some(self.prog));
             gl.bind_vertex_array(Some(self.vao));
-            gl.uniform_matrix_4_f32_slice(Some(&self.u.vp), false, &vp.to_cols_array());
-            gl.uniform_3_f32(Some(&self.u.cam), cam.x, cam.y, cam.z);
-            gl.uniform_2_f32(Some(&self.u.fog), self.fog.0, self.fog.1);
-            gl.uniform_3_f32(Some(&self.u.cst), 0.75, 0.75, 0.75);
+            for (pg, u) in self.progs.iter().zip(&self.us) {
+                gl.use_program(Some(*pg));
+                gl.uniform_matrix_4_f32_slice(Some(&u.vp), false, &vp.to_cols_array());
+                gl.uniform_3_f32(Some(&u.cam), cam.x, cam.y, cam.z);
+                gl.uniform_2_f32(Some(&u.fog), self.fog.0, self.fog.1);
+                gl.uniform_3_f32(Some(&u.cst), 0.75, 0.75, 0.75);
+            }
 
             let mut cur_tex = u32::MAX - 1;
             let mut cur_lm = u32::MAX - 1;
@@ -430,7 +482,16 @@ impl Renderer {
                 self.order[2].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect(),
                 blended,
             ];
-            for list in &lists {
+            // Diagnostics: P2GLES_SKIP=opaque,masked,splat,blend leaves those passes out.
+            let skip = std::env::var("P2GLES_SKIP").unwrap_or_default();
+            for (pi, list) in lists.iter().enumerate() {
+                if skip.contains(["opaque", "masked", "splat", "blend"][pi]) {
+                    continue;
+                }
+                let ui = (pi == 1 && std::env::var_os("P2GLES_ONE_PROG").is_none()) as usize;
+                let u = &self.us[ui];
+                gl.use_program(Some(self.progs[ui]));
+                cur_state = None;
                 for &di in list {
                     let d = &self.draws[di];
                     let k = d.key;
@@ -462,20 +523,20 @@ impl Renderer {
                                 gl.depth_mask(false);
                             }
                         }
-                        gl.uniform_1_i32(Some(&self.u.atest), (k.pass == Pass::Masked) as i32);
-                        gl.uniform_1_i32(Some(&self.u.fopaque), (k.pass == Pass::Opaque && k.blend == 0) as i32);
+                        if u.has_atest { gl.uniform_1_i32(Some(&u.atest), (k.pass == Pass::Masked) as i32); }
+                        gl.uniform_1_i32(Some(&u.fopaque), (k.pass == Pass::Opaque && k.blend == 0) as i32);
                         let fc = match k.blend {
                             3 | 5 => [1.0; 3],
                             4 => [0.0; 3],
                             _ => self.fog_color,
                         };
-                        gl.uniform_3_f32(Some(&self.u.fog_color), fc[0], fc[1], fc[2]);
+                        gl.uniform_3_f32(Some(&u.fog_color), fc[0], fc[1], fc[2]);
                     }
                     if cur_state.map(|s| s.mode) != Some(k.mode) {
-                        gl.uniform_1_i32(Some(&self.u.mode), k.mode as i32);
+                        gl.uniform_1_i32(Some(&u.mode), k.mode as i32);
                     }
                     if cur_state.map(|s| s.alpha_map != NONE) != Some(k.alpha_map != NONE) {
-                        gl.uniform_1_i32(Some(&self.u.use_alpha), (k.alpha_map != NONE) as i32);
+                        gl.uniform_1_i32(Some(&u.use_alpha), (k.alpha_map != NONE) as i32);
                     }
                     cur_state = Some(k);
                     if k.tex != cur_tex {
@@ -495,7 +556,18 @@ impl Renderer {
                         gl.active_texture(glow::TEXTURE0);
                         cur_alpha = k.alpha_map;
                     }
-                    gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, d.first * 4);
+                    if let Some(b) = self.ibos[di] {
+                        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b));
+                        gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, 0);
+                    } else {
+                    match DRAW_RANGE_ELEMENTS.get() {
+                        Some(&f) if std::env::var_os("P2GLES_NO_RANGE").is_none() => {
+                            let f: DrawRangeElementsFn = std::mem::transmute(f);
+                            f(glow::TRIANGLES, d.vmin, d.vmax, d.count, glow::UNSIGNED_INT, (d.first as usize * 4) as *const std::ffi::c_void);
+                        }
+                        _ => gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, d.first * 4),
+                    }
+                    }
                     stats.draws += 1;
                     stats.tris += d.count as u64 / 3;
                 }

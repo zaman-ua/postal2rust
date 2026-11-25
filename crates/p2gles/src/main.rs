@@ -121,6 +121,10 @@ impl ApplicationHandler for App {
             eprintln!("swap interval: {e}");
         }
         let gl = unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) };
+        let dre = display.get_proc_address(c"glDrawRangeElements");
+        if !dre.is_null() {
+            let _ = renderer::DRAW_RANGE_ELEMENTS.set(dre as usize);
+        }
         {
             use glow::HasContext;
             unsafe {

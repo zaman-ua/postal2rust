@@ -42,7 +42,11 @@ out vec4 oColor;
 void main() {
     vec4 t = texture(uTex, vUv);
     if (uForceOpaque) t.a = 1.0;
+#ifdef ALPHA_TEST
+    // Only the masked program has discard: on Mali a discard anywhere in a program disables
+    // early depth test / Forward Pixel Kill for every draw that uses it.
     if (uAlphaTest && t.a < 0.5) discard;
+#endif
     vec3 light;
     if (uMode == 1) light = texture(uLm, vUv2).rgb * 2.0;
     else if (uMode == 2) light = vCol * 2.0;
