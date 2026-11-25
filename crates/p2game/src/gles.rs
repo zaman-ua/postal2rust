@@ -16,11 +16,11 @@ use glutin::prelude::*;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
 use bevy::asset::AssetEvent;
 use bevy::camera::primitives::Aabb;
-use bevy::camera::visibility::{InheritedVisibility, NoFrustumCulling, RenderLayers};
+use bevy::camera::visibility::{InheritedVisibility, NoFrustumCulling, RenderLayers, VisibilityRange};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::camera::ClearColorConfig;
-use p2gles::dynamic::{Blend, Draw, Dynamic, Env, Light, MeshIn, TexIn, UV_IDENTITY};
+use p2gles::dynamic::{Blend, CanvasBlend, CanvasDraw, Draw, Dynamic, Env, Light, MeshIn, TexIn, UV_IDENTITY};
 use p2gles::renderer::{Options, Renderer};
 use std::collections::HashSet;
 use p2view::scene::SceneData;
@@ -97,6 +97,8 @@ pub struct GlBaked(pub HashSet<Entity>);
 pub struct ClassifyBaked {
     pub before: HashSet<Entity>,
     pub movers: HashSet<Entity>,
+    /// Static mesh instances (all map actors' entities): the only ones with a distance range that are baked.
+    pub statics: HashSet<Entity>,
 }
 
 pub struct GlesPlugin;
@@ -108,9 +110,15 @@ impl Plugin for GlesPlugin {
 }
 
 /// Runs right after `load_scene` in the Update chain.
-pub fn classify_baked(mut commands: Commands, pending: Option<Res<ClassifyBaked>>, meshes: Query<Entity, With<Mesh3d>>, baked: Option<ResMut<GlBaked>>) {
+pub fn classify_baked(mut commands: Commands, pending: Option<Res<ClassifyBaked>>, meshes: Query<(Entity, Option<&RenderLayers>, Has<VisibilityRange>), With<Mesh3d>>, baked: Option<ResMut<GlBaked>>) {
     let (Some(p), Some(mut baked)) = (pending, baked) else { return };
-    baked.0 = meshes.iter().filter(|e| !p.before.contains(e) && !p.movers.contains(e)).collect();
+    // Baked: BSP, terrain layers and static mesh instances on the default layer. Not baked: movers,
+    // the sky zone (own layer) and terrain decorations (ranged entities that are no map actor).
+    baked.0 = meshes
+        .iter()
+        .filter(|(e, l, ranged)| !p.before.contains(e) && !p.movers.contains(e) && l.is_none_or(|l| l.intersects(&RenderLayers::layer(0))) && (!ranged || p.statics.contains(e)))
+        .map(|(e, _, _)| e)
+        .collect();
     println!("gles: {} scene mesh entities baked into the GL world ({} mover entities stay dynamic)", baked.0.len(), p.movers.len());
     commands.remove_resource::<ClassifyBaked>();
 }
@@ -328,6 +336,7 @@ fn draw_frame(world: &mut World) {
         Option<&MeshMaterial3d<p2view::baked::BakedMaterial>>,
         Option<&Aabb>,
         Option<&NoFrustumCulling>,
+        Option<&VisibilityRange>,
     )>();
     let mut jq = world.query::<&GlobalTransform>();
     {
@@ -346,7 +355,7 @@ fn draw_frame(world: &mut World) {
                 [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2]
             })
             .collect();
-        for (e, m, gt, vis, layers, skin, sm, bm, aabb, nocull) in qd.iter(world) {
+        for (e, m, gt, vis, layers, skin, sm, bm, aabb, nocull, range) in qd.iter(world) {
             if !vis.get() || baked.contains(&e) {
                 continue;
             }
@@ -404,6 +413,9 @@ fn draw_frame(world: &mut World) {
                     continue;
                 }
                 let dist = (center - c.pos).length();
+                if range.is_some_and(|r| dist > r.end_margin.end) {
+                    continue;
+                }
                 if cullable {
                     if let Some((_, end, _)) = c.fog {
                         if dist - radius > end * 1.05 {
@@ -445,6 +457,62 @@ fn draw_frame(world: &mut World) {
         }
     }
     world.resource_mut::<GlBaked>().0 = baked;
+
+    // HUD / menus: p2canvas batches (Mesh2d + CanvasMaterial), in painter's order (z).
+    let mut canvas: Vec<CanvasDraw> = Vec::new();
+    {
+        use p2canvas::eval::Blend as CB;
+        use p2canvas::render::CanvasMaterial;
+        let mut cq = world.query::<(&Mesh2d, &MeshMaterial2d<CanvasMaterial>, &GlobalTransform, &InheritedVisibility)>();
+        let meshes = world.resource::<Assets<Mesh>>();
+        let images = world.resource::<Assets<Image>>();
+        let mats = world.resource::<Assets<CanvasMaterial>>();
+        let mut items: Vec<(f32, &Mesh2d, &CanvasMaterial)> = cq.iter(world).filter(|(_, _, _, v)| v.get()).filter_map(|(m, mm, gt, _)| mats.get(&mm.0).map(|cm| (gt.translation().z, m, cm))).collect();
+        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, m, cm) in items {
+            let Some(mesh) = meshes.get(&m.0) else { continue };
+            if !upload_mesh(&mut gles, m.0.id(), mesh) {
+                continue;
+            }
+            let d = &cm.uniform_data;
+            let mut tex = [None; 3];
+            for (i, h) in [&cm.tex0, &cm.tex1, &cm.tex2].into_iter().enumerate() {
+                if let Some(h) = h {
+                    if let Some(img) = images.get(h) {
+                        if upload_image(&mut gles, h.id(), img) {
+                            tex[i] = Some(aid(h.id()));
+                        }
+                    }
+                }
+            }
+            let row = |x: &p2canvas::eval::UvXform| ([x.m[0], x.m[1], x.t[0], 0.0], [x.m[2], x.m[3], x.t[1], 0.0]);
+            let (u0, v0) = row(&d.xforms[0]);
+            let (u1, v1) = row(&d.xforms[1]);
+            let (u2, v2) = row(&d.xforms[2]);
+            canvas.push(CanvasDraw {
+                mesh: aid(m.0.id()),
+                tex,
+                tint: d.tint,
+                slot_color: d.slot_colors,
+                xu: [u0, u1, u2],
+                xv: [v0, v1, v2],
+                kinds: [d.kinds[0] as i32, d.kinds[1] as i32, d.kinds[2] as i32],
+                ops: [d.ops[0] as i32, d.ops[1] as i32, d.ops[2] as i32, d.ops[3] as i32],
+                modulate: d.modulate,
+                alpha_test: d.alpha_test,
+                blend: match cm.blend {
+                    CB::Opaque => CanvasBlend::Opaque,
+                    CB::Alpha => CanvasBlend::Alpha,
+                    CB::Translucent => CanvasBlend::Translucent,
+                    CB::Modulate => CanvasBlend::Modulate,
+                    CB::AlphaModulate => CanvasBlend::AlphaModulate,
+                    CB::Darken => CanvasBlend::Darken,
+                    CB::Brighten => CanvasBlend::Brighten,
+                    CB::Invisible => CanvasBlend::Invisible,
+                },
+            });
+        }
+    }
 
     // Draw.
     let g = &mut gles;
@@ -491,6 +559,12 @@ fn draw_frame(world: &mut World) {
         g.dynamic.render(unsafe { &*gl }, vp, c.pos, &env, &mut passes[ci]);
         draws_n += g.dynamic.draws;
         tris_n += g.dynamic.tris;
+    }
+    {
+        let gl = &g.gl as *const glow::Context;
+        // SAFETY: disjoint fields (gl is only read).
+        g.dynamic.render_canvas(unsafe { &*gl }, size, &canvas);
+        draws_n += g.dynamic.draws;
     }
     let _ = g.surface.swap_buffers(&g.ctx);
     g.frames += 1;

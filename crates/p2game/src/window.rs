@@ -669,7 +669,8 @@ fn load_scene(
     if use_gles {
         let before: std::collections::HashSet<Entity> = snap.before.clone().unwrap_or_default().into_iter().collect();
         let movers = spawned.movers.iter().flat_map(|(_, e)| e.iter().copied()).collect();
-        commands.insert_resource(crate::gles::ClassifyBaked { before, movers });
+        let statics = spawned.actors.values().flat_map(|e| e.iter().copied()).collect();
+        commands.insert_resource(crate::gles::ClassifyBaked { before, movers, statics });
     }
     println!(
         "render: {} actor entity groups linked to VM actors ({static_groups} static mesh actors, {} movers; {} static mesh instances; {gone} map actors absent from the save hidden)",

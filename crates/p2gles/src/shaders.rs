@@ -143,3 +143,78 @@ void main() {
     oColor = vec4(c, t.a);
 }
 "#;
+
+/// HUD / menus (p2canvas): port of canvas.wgsl. Maths in linear space like the Bevy version; the
+/// texels are sRGB bytes and the framebuffer is not, so decode on input and encode on output.
+pub const CANVAS_VS: &str = r#"#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUv;
+layout(location=4) in vec4 aCol;
+uniform mat4 uVP;
+out vec2 vUv;
+out vec4 vCol;
+void main() {
+    gl_Position = uVP * vec4(aPos, 1.0);
+    vUv = aUv;
+    vCol = aCol;
+}
+"#;
+
+pub const CANVAS_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D uTex0;
+uniform sampler2D uTex1;
+uniform sampler2D uTex2;
+uniform vec4 uTint;
+uniform vec4 uSlotColor[3];
+uniform vec4 uXu[3];
+uniform vec4 uXv[3];
+uniform ivec3 uKinds;
+uniform ivec4 uOps;       // color_op, alpha_op, invert_mask, mode (0 plain, 1 combiner, 2 shader opacity)
+uniform vec4 uParams;     // modulate, alpha test (negative = off)
+in vec2 vUv;
+in vec4 vCol;
+out vec4 oColor;
+vec2 xf(int i) {
+    return vec2(uXu[i].x * vUv.x + uXu[i].y * vUv.y + uXu[i].z, uXv[i].x * vUv.x + uXv[i].y * vUv.y + uXv[i].z);
+}
+vec4 lin(vec4 c) { return vec4(pow(c.rgb, vec3(2.2)), c.a); }
+vec4 pick(int kind, vec4 s, vec4 color) {
+    if (kind == 1) return s * color;
+    if (kind == 2) return color;
+    return vec4(1.0);
+}
+void main() {
+    vec4 s0 = lin(texture(uTex0, xf(0)));
+    vec4 s1 = lin(texture(uTex1, xf(1)));
+    vec4 s2 = lin(texture(uTex2, xf(2)));
+    vec4 c1 = pick(uKinds.x, s0, uSlotColor[0]);
+    vec4 c2 = pick(uKinds.y, s1, uSlotColor[1]);
+    vec4 mk = pick(uKinds.z, s2, uSlotColor[2]);
+    vec4 o = c1;
+    if (uOps.w == 1) {
+        float ma = mk.a;
+        if (uOps.z == 1) ma = 1.0 - ma;
+        vec3 rgb = c1.rgb;
+        if (uOps.x == 1) rgb = c2.rgb;
+        else if (uOps.x == 2) rgb = c1.rgb * c2.rgb;
+        else if (uOps.x == 3) rgb = c1.rgb + c2.rgb;
+        else if (uOps.x == 4) rgb = c1.rgb - c2.rgb;
+        else if (uOps.x == 5) rgb = mix(c2.rgb, c1.rgb, ma);
+        else if (uOps.x == 6) rgb = c1.rgb + c2.rgb * ma;
+        else if (uOps.x == 7) rgb = mk.rgb;
+        float a = ma;
+        if (uOps.y == 1) a = c1.a * c2.a;
+        else if (uOps.y == 2) a = c1.a + c2.a;
+        else if (uOps.y == 3) a = c1.a;
+        else if (uOps.y == 4) a = c2.a;
+        o = vec4(clamp(rgb * uParams.x, 0.0, 1.0), clamp(a, 0.0, 1.0));
+    } else if (uOps.w == 2) {
+        o = vec4(c1.rgb, mk.a);
+    }
+    vec4 color = o * uTint * vCol;
+    if (uParams.y >= 0.0 && color.a < uParams.y) discard;
+    oColor = vec4(pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), color.a);
+}
+"#;
