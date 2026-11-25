@@ -41,6 +41,7 @@ struct Args {
     chunk: f32,
     no_cull: bool,
     vsync: bool,
+    fullscreen: bool,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +59,7 @@ fn parse_args() -> Args {
         chunk: get("--chunk").and_then(|s| s.parse().ok()).unwrap_or(48.0),
         no_cull: a.iter().any(|x| x == "--no-cull"),
         vsync: a.iter().any(|x| x == "--vsync"),
+        fullscreen: a.iter().any(|x| x == "--fullscreen"),
     }
 }
 
@@ -102,6 +104,8 @@ impl ApplicationHandler for App {
         }
         let (w, h) = self.args.res;
         let attrs = Window::default_attributes().with_title(format!("p2gles - {}", self.args.map)).with_inner_size(PhysicalSize::new(w, h)).with_resizable(false);
+        // --fullscreen: borderless over the whole screen (--res must match the screen mode).
+        let attrs = if self.args.fullscreen { attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))) } else { attrs };
         let template = ConfigTemplateBuilder::new().with_api(Api::GLES3).with_depth_size(24).with_alpha_size(0);
         let (window, config) = DisplayBuilder::new()
             .with_preference(glutin_winit::ApiPreference::PreferEgl)
