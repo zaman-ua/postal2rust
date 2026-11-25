@@ -232,7 +232,6 @@ impl Renderer {
                 bake_split(&mut baker, key, m, |i| V { pos: m.positions[i], uv: m.uvs[i], uv2: if m.uvs_b.is_empty() { [0.0; 2] } else { m.uvs_b[i] }, col: [0, 0, 0, 255] });
             }
             // Static meshes: bake the transform, one chunk per instance origin cell.
-            let level_const = 0.75f32;
             for inst in &data.instances {
                 let src = &data.meshes[inst.mesh as usize];
                 let mat = &data.materials[inst.material as usize];
