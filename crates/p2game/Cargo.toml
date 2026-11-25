@@ -23,7 +23,7 @@ p2view = { path = "../p2view", optional = true }
 # HUD / menus / input (ram's ui.rs).
 p2canvas = { path = "../p2canvas", optional = true }
 p2input = { path = "../p2input", features = ["bevy"], optional = true }
-bevy = { version = "0.19", optional = true }
+bevy = { version = "0.19", optional = true, features = ["webgl2"] }
 # Same winit as bevy_winit: window resize requests from the video settings (settings.rs).
 winit = { version = "0.30", default-features = false, optional = true }
 # Particles, fluids, projector decals (rooster's fx_glue.rs).
@@ -31,6 +31,8 @@ p2fx = { path = "../p2fx", optional = true }
 # Global allocator of the p2game binary: the interpreter's many short-lived mixed-size
 # allocations degrade the Windows system heap (see examples/tick_bench.rs).
 mimalloc = { version = "0.1", default-features = false }
+# ARM SBC (Mali, panfrost): включить бэкенд OpenGL ES в wgpu (Bevy на нативе его не включает)
+wgpu = { version = "29", default-features = false, features = ["gles"] }
 
 [features]
 default = ["window"]

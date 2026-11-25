@@ -1696,8 +1696,25 @@ fn load_texture_opacity(o: &Obj, op: &Obj) -> TexData {
     t
 }
 
+/// ARM/мало памяти: `P2_TEX_SKIP_MIPS=N` — пропустить N верхних mip-уровней (текстуры от 64 px), память /4 за уровень.
+fn tex_skip_mips() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("P2_TEX_SKIP_MIPS").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0))
+}
+
 fn load_texture(o: &Obj, gpu_bc: bool) -> TexData {
-    let Ok(t) = read_texture(&o.pkg, o.export) else { return placeholder(o.name()) };
+    let Ok(mut t) = read_texture(&o.pkg, o.export) else { return placeholder(o.name()) };
+    for _ in 0..tex_skip_mips() {
+        let ok = t.mips.len() > 1
+            && t.mips[0].width >= 64
+            && t.mips[0].height >= 64
+            && t.mips[1].width == (t.mips[0].width / 2).max(1)
+            && t.mips[1].height == (t.mips[0].height / 2).max(1);
+        if !ok {
+            break;
+        }
+        t.mips.remove(0);
+    }
     let base = t.mips.first();
     let (w, h) = base.map(|m| (m.width, m.height)).unwrap_or((0, 0));
     let bc = match t.format {

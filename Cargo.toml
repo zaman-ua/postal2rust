@@ -42,3 +42,12 @@ codegen-units = 16
 inherits = "release"
 debug = "line-tables-only"
 incremental = false
+
+[patch.crates-io]
+wgpu-hal = { path = "patches/wgpu-hal" }
+bevy_render = { path = "patches/bevy_render" }
+bevy_core_pipeline = { path = "patches/bevy_core_pipeline" }
+bevy_gizmos_render = { path = "patches/bevy_gizmos_render" }
+bevy_pbr = { path = "patches/bevy_pbr" }
+bevy_post_process = { path = "patches/bevy_post_process" }
+bevy_feathers = { path = "patches/bevy_feathers" }
