@@ -1,3 +1,83 @@
+# Форк zaman-ua: p2gles и работа на слабом ARM (Mali-G31)
+
+Ветка `p2gles` этого форка — эксперимент: заставить POSTAL 2 из этого порта работать на ТВ-приставке
+(Amlogic S905X3: 4× Cortex-A55, GPU **Mali-G31 MC1**, Debian trixie, Mesa/Panfrost, OpenGL ES 3.1).
+Оригинальный README автора — ниже, без изменений. Ветка `main` совпадает с исходным репозиторием.
+
+## Что здесь сделано
+
+**1. Патчи порта для Mali / GLES** (коммиты `x96plus: ...`):
+- wgpu с бэкендом GLES и EGL на X11, WebGL2-путь Bevy на нативе (`patches/`, через `[patch.crates-io]`) —
+  без них на Panfrost Bevy не стартует (panvk v7 он не принимает);
+- пакеты игры читаются через mmap вместо копии в куче: процесс занимал ~3 ГБ и уходил в своп,
+  теперь своп 0 (`P2_PKG_NO_MMAP=1` — по-старому);
+- MSAA выключен на всех камерах (`P2_MSAA=1` — вернуть), дальняя плоскость камеры = конец тумана;
+- отчёт `frame ... ms` считает по реальному времени (раньше любой кадр > 250 мс показывался как 250);
+- `.int` в UTF-16BE (русская Steam-версия), `P2_TEX_SKIP_MIPS=N`.
+
+Итог на приставке: Bevy-версия ~3.5 fps. Замеры показали, что упор не в шейдеры и не в пиксели,
+а в накладные расходы Bevy в режиме совместимости (~40 мс пустого кадра), ~2400 отдельных вызовов
+отрисовки и логику игры (~30 мс). Подробности — в истории коммитов.
+
+**2. `crates/p2gles` — тонкий рендерер мира на OpenGL ES 3.0** (glow + glutin/EGL + winit):
+- карта собирается тем же `p2view::scene::build_scene`, рисуется в стиле UE2: текстура × лайтмапа (BSP),
+  текстура × запечённый цвет вершин (статик-меши), слои ландшафта по альфа-картам, туман;
+- вся статика в одном вершинном буфере, нарезана на ячейки по 48 м, отсечение по пирамиде и туману:
+  ~200 вызовов отрисовки вместо ~2400;
+- DXT-текстуры уходят в GPU без распаковки (видеопамять 636 → 256 МБ);
+- **только мир**: нет людей, логики, HUD и неба (фон — цвет тумана). Это этап 0 — проверка, стоит ли
+  заменять рендер Bevy своим.
+
+| Mali-G31 MC1, 800x480 | Mesa 25.0 | Mesa 26.1 |
+|---|---|---|
+| p2gles, suburbs-3 (спавн) | 57 мс (17 fps) | **10.5 мс (95 fps)** |
+| p2gles, estates (спавн) | 47 мс (21 fps) | **8 мс (125 fps)** |
+| Bevy-порт, suburbs-3 (вся игра) | ~285 мс | ~282 мс |
+| Оригинал (i386) через box64 | 17 fps | 17–19 fps |
+
+Mesa 26 для Debian trixie есть в `trixie-backports`.
+
+**Ловушка Panfrost**: если много draw-вызовов берут индексы из одного общего индексного буфера,
+драйвер каждый кадр заново сканирует индексы на CPU (`u_vbuf_get_minmax_index`, его кэш min/max на
+буфер маленький; `glDrawRangeElements` не помогает). В p2gles у каждого вызова свой индексный буфер
+(`P2GLES_ONE_IBO=1` — общий, для сравнения).
+
+## Сборка
+
+Нужна своя копия POSTAL 2 (Steam, `POSTAL2Complete`).
+
+**В Docker (рекомендуется, кросс-сборка под ARM и сборка под x86):**
+```
+tools/docker/build.sh arm p2gles    # -> target-docker/aarch64-unknown-linux-gnu/release/p2gles
+tools/docker/build.sh x86 p2gles    # -> target-docker/release/p2gles
+```
+Образ `p2-builder` собирается из `tools/docker/Dockerfile` при первом запуске (или `docker load -i p2-builder.tar`).
+Бинарник x86 из образа собран на glibc 2.41 (Debian trixie).
+
+**На хосте:** Rust stable (≥ 1.95 для Bevy 0.19), пакеты `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev`:
+```
+cargo build --release -p p2gles
+```
+
+## Запуск p2gles
+
+```
+p2gles --game <папка POSTAL2Complete> --map suburbs-3 [--res 800x480] [--fullscreen] [--vsync]
+p2gles --map estates --bench 20          # замер: мс/кадр, fps, вызовы, треугольники каждые 5 с
+p2gles --map suburbs-3 --screenshot out.png
+```
+Управление: WASD — движение, мышь — обзор, Q/E — вниз/вверх, Shift — быстрее, Esc — выход.
+`--game` по умолчанию — `~/.local/share/Steam/steamapps/common/POSTAL2Complete`.
+Ещё: `--cam x,y,z,yaw,pitch` (юниты Unreal), `--fog start,end`, `--chunk M`, `--no-cull`;
+переменные `P2GLES_NO_BC`, `P2GLES_ANISO=N`, `P2GLES_SKIP=opaque,masked,splat,blend`.
+Отчёт первого этапа и скриншоты: `crates/p2gles/REPORT.md`, `crates/p2gles/shots/`.
+
+## Дальше
+
+Этап 1 — встроить p2gles в игру вместо рендера Bevy: мир, затем персонажи (скиннинг), HUD, небо, эффекты.
+
+---
+
 # Postal 2 Rust/Bevy
 
 > **Work in progress.** This is an unfinished, unofficial engine port. The whole week (Monday to Friday plus Apocalypse Weekend) can be played start to finish, but expect visual differences, AI oddities, missing effects and bugs compared with the original game. Bug reports are welcome.
