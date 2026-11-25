@@ -45,6 +45,8 @@ pub struct Gles {
     frames: u64,
     win_start: std::time::Instant,
     win_frames: u32,
+    collect_ms: f64,
+    submit_ms: f64,
 }
 
 impl Gles {
@@ -67,7 +69,7 @@ impl Gles {
         }
         let gl = unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) };
         let dynamic = Dynamic::new(&gl);
-        Ok(Gles { gl, dynamic, stale_meshes: HashSet::new(), stale_tex: HashSet::new(), ctx, surface, display, renderer: None, size, frames: 0, win_start: std::time::Instant::now(), win_frames: 0 })
+        Ok(Gles { gl, dynamic, stale_meshes: HashSet::new(), stale_tex: HashSet::new(), ctx, surface, display, renderer: None, size, frames: 0, win_start: std::time::Instant::now(), win_frames: 0, collect_ms: 0.0, submit_ms: 0.0 })
     }
 
     /// Bakes the level's static geometry into GL buffers (replaces the previous level's).
@@ -268,6 +270,7 @@ fn draw_frame(world: &mut World) {
     if world.get_non_send_resource::<Gles>().is_none() {
         return;
     }
+    let t_frame = std::time::Instant::now();
     let Some(win) = world.query_filtered::<&Window, With<PrimaryWindow>>().iter(world).next() else { return };
     let size = (win.physical_width().max(1), win.physical_height().max(1));
     // Cameras, lowest order first.
@@ -547,6 +550,7 @@ fn draw_frame(world: &mut World) {
 
     // Draw.
     let g = &mut gles;
+    let t_collect = t_frame.elapsed();
     let t_draw = std::time::Instant::now();
     let mut draws_n = 0u32;
     let mut tris_n = 0u64;
@@ -637,10 +641,14 @@ fn draw_frame(world: &mut World) {
     let _ = g.surface.swap_buffers(&g.ctx);
     g.frames += 1;
     g.win_frames += 1;
-    let _ = t_draw;
+    g.collect_ms += t_collect.as_secs_f64() * 1000.0;
+    g.submit_ms += t_draw.elapsed().as_secs_f64() * 1000.0;
     if g.win_start.elapsed().as_secs() >= 5 {
         let ms = g.win_start.elapsed().as_secs_f64() * 1000.0 / g.win_frames as f64;
-        println!("gles: {ms:.1} ms/frame ({:.0} fps), {} draws, {} tris", 1000.0 / ms, draws_n, tris_n);
+        let n = g.win_frames as f64;
+        println!("gles: {ms:.1} ms/frame ({:.0} fps), {} draws, {} tris; ECS collect {:.2} ms, GL submit {:.2} ms (per frame)", 1000.0 / ms, draws_n, tris_n, g.collect_ms / n, g.submit_ms / n);
+        g.collect_ms = 0.0;
+        g.submit_ms = 0.0;
         g.win_start = std::time::Instant::now();
         g.win_frames = 0;
     }
