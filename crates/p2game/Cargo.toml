@@ -32,12 +32,17 @@ p2fx = { path = "../p2fx", optional = true }
 # allocations degrade the Windows system heap (see examples/tick_bench.rs).
 mimalloc = { version = "0.1", default-features = false }
 # ARM SBC (Mali, panfrost): включить бэкенд OpenGL ES в wgpu (Bevy на нативе его не включает)
+# p2gles renderer embedded in the game (P2GAME_GLES=1, gles.rs)
+p2gles = { path = "../p2gles", optional = true }
+glutin = { version = "0.32", optional = true }
+glow = { version = "0.17", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 wgpu = { version = "29", default-features = false, features = ["gles"] }
 
 [features]
 default = ["window"]
 # Windowed mode (Bevy + p2view). Build with --no-default-features for a headless-only binary.
-window = ["dep:p2view", "dep:bevy", "dep:p2fx", "p2sound/device", "dep:p2canvas", "dep:p2input", "dep:winit"]
+window = ["dep:p2view", "dep:bevy", "dep:p2fx", "p2sound/device", "dep:p2canvas", "dep:p2input", "dep:winit", "dep:p2gles", "dep:glutin", "dep:glow", "dep:raw-window-handle"]
 # Chrome-trace spans for every Bevy system and render phase (writes trace-*.json in the cwd).
 # Build with `--features trace` into a separate target dir; open the file in ui.perfetto.dev.
 trace = ["window", "bevy/trace_chrome"]

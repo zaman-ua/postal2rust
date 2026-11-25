@@ -243,6 +243,12 @@ pub fn run(cfg: BootConfig, args: Args) {
         let wgpu = bevy::render::settings::WgpuSettings { disabled_features: Some(bevy::render::settings::WgpuFeatures::TEXTURE_BINDING_ARRAY), ..default() };
         plugins = plugins.set(bevy::render::RenderPlugin { render_creation: wgpu.into(), ..default() });
     }
+    if crate::gles::enabled() {
+        // p2gles draws the frame: Bevy's renderer is not created at all (no RenderApp).
+        let wgpu = bevy::render::settings::WgpuSettings { backends: None, ..default() };
+        plugins = plugins.set(bevy::render::RenderPlugin { render_creation: wgpu.into(), ..default() });
+        app.add_plugins(crate::gles::GlesPlugin);
+    }
     app.add_plugins(plugins);
     crate::settings::install(&mut sim);
     app.add_plugins(crate::settings::SettingsPlugin);
@@ -575,9 +581,13 @@ fn load_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut gles: Option<NonSendMut<crate::gles::Gles>>,
 ) {
     if !sim.reload {
         return;
+    }
+    if gles.is_none() && crate::gles::enabled() {
+        return; // wait for the GL context (created in PreUpdate once the window exists)
     }
     sim.reload = false;
     snap.before = Some(existing.iter().collect());
@@ -598,8 +608,13 @@ fn load_scene(
         sim.dynmesh.set_lighting(crate::dynmesh::ActorLighting::new(&map, &level_actors));
         sim.dynmesh.start_bake_ahead(&lib, &sim.game.world.vm, &map, &level_actors, sim.game.player_controller);
     }
-    let mut data = scene::build_scene(&lib, &map, &scene::Options { gpu_bc, projectors: false }).unwrap_or_else(|e| panic!("scene: {e}"));
+    let use_gles = crate::gles::enabled();
+    // p2gles uploads DXT as is (no BC support query: its GL extension check decides).
+    let mut data = scene::build_scene(&lib, &map, &scene::Options { gpu_bc: gpu_bc || use_gles, projectors: false }).unwrap_or_else(|e| panic!("scene: {e}"));
     let t_build = t0.elapsed().as_secs_f32();
+    if let Some(g) = gles.as_mut() {
+        g.load_world(&data);
+    }
     let merge = std::env::var_os("P2GAME_NO_MERGE").is_none();
     let mut spawned = spawn::spawn_scene_with(&mut commands, &mut data, spawn::SpawnOptions { unlit: args.unlit, baked: true, merge }, &mut images, &mut meshes, &mut materials);
     println!("load: scene built in {t_build:.2} s, spawned in {:.2} s ({:.2} s since boot)", t0.elapsed().as_secs_f32() - t_build, boot_secs());
