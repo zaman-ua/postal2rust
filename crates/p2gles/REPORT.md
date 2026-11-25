@@ -7,7 +7,7 @@
 ## Как собрать и запустить
 
 ```
-export CARGO_TARGET_DIR=/home/zaman/projects/x96plus/postal2/host-target
+export CARGO_TARGET_DIR=../host-target
 cargo +stable build --release -p p2gles
 DISPLAY=:0 $CARGO_TARGET_DIR/release/p2gles --map suburbs-3 --bench 20 --res 800x480
 DISPLAY=:0 $CARGO_TARGET_DIR/release/p2gles --map suburbs-3 --screenshot out.png

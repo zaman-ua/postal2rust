@@ -49,7 +49,7 @@ fn parse_args() -> Args {
     let get = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
     let nums = |s: String| s.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>();
     Args {
-        game: get("--game").map(PathBuf::from).unwrap_or_else(|| "/home/zaman/.local/share/Steam/steamapps/common/POSTAL2Complete".into()),
+        game: get("--game").map(PathBuf::from).unwrap_or_else(|| format!("{}/.local/share/Steam/steamapps/common/POSTAL2Complete", std::env::var("HOME").unwrap_or_default()).into()),
         map: get("--map").unwrap_or_else(|| "suburbs-3".into()),
         res: get("--res").and_then(|s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))).unwrap_or((800, 480)),
         cam: get("--cam").map(nums).filter(|v| v.len() == 5).map(|v| [v[0], v[1], v[2], v[3], v[4]]),
