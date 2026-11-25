@@ -1,0 +1,21 @@
+[package]
+name = "p2gles"
+description = "Stage 0: thin OpenGL ES 3.0 map renderer (UE2 style) for POSTAL 2 maps, uses p2view only for build_scene"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "p2gles"
+path = "src/main.rs"
+
+[dependencies]
+upkg.workspace = true
+p2view = { path = "../p2view" }
+bevy_math = "0.19"
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+glow = "0.17"
+png = "0.18"
