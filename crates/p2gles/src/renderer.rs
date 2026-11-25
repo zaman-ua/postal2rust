@@ -152,7 +152,7 @@ pub static MIPS_GENERATED: std::sync::atomic::AtomicU32 = std::sync::atomic::Ato
 
 /// DXT1/3/5 mips uploaded as-is (GL_EXT_texture_compression_s3tc): 4-8x less memory and
 /// texture bandwidth than the RGBA8 decode. The chain stops where the package's does.
-unsafe fn upload_bc(gl: &glow::Context, w: u32, h: u32, fmt: PixelFormat, mips: &[Vec<u8>], aniso: bool) -> Option<glow::Texture> {
+pub(crate) unsafe fn upload_bc(gl: &glow::Context, w: u32, h: u32, fmt: PixelFormat, mips: &[Vec<u8>], aniso: bool) -> Option<glow::Texture> {
     let (gl_fmt, block) = match fmt {
         PixelFormat::Bc1 => (0x83F1u32, 8u32), // COMPRESSED_RGBA_S3TC_DXT1_EXT (keeps 1-bit alpha)
         PixelFormat::Bc2 => (0x83F2, 16),      // DXT3
@@ -193,7 +193,7 @@ unsafe fn upload_bc(gl: &glow::Context, w: u32, h: u32, fmt: PixelFormat, mips: 
 
 pub static BC_UPLOADED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8]], repeat: bool, aniso: bool) -> glow::Texture {
+pub(crate) unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8]], repeat: bool, aniso: bool) -> glow::Texture {
     unsafe {
         let t = gl.create_texture().unwrap();
         gl.bind_texture(glow::TEXTURE_2D, Some(t));
