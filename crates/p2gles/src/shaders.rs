@@ -72,6 +72,11 @@ layout(location=3) in vec2 aUv2;
 layout(location=4) in vec4 aCol;
 layout(location=5) in vec4 aW;
 layout(location=6) in uvec4 aJ;
+layout(location=7) in vec4 aM0;
+layout(location=8) in vec4 aM1;
+layout(location=9) in vec4 aM2;
+layout(location=10) in vec4 aM3;
+uniform bool uInst;
 uniform mat4 uVP;
 uniform mat4 uModel;
 uniform mat4 uJoints[64];
@@ -92,8 +97,9 @@ void main() {
         p = m * p;
         n = mat3(m) * n;
     } else {
-        p = uModel * p;
-        n = mat3(uModel) * n;
+        mat4 mm = uInst ? mat4(aM0, aM1, aM2, aM3) : uModel;
+        p = mm * p;
+        n = mat3(mm) * n;
     }
     gl_Position = uVP * p;
     vUv = (uUvM * vec3(aUv, 1.0)).xy;

@@ -104,6 +104,7 @@ struct Prog {
     model: Option<glow::UniformLocation>,
     joints: Option<glow::UniformLocation>,
     skin: Option<glow::UniformLocation>,
+    inst: Option<glow::UniformLocation>,
     cam: Option<glow::UniformLocation>,
     uvm: Option<glow::UniformLocation>,
     mode: Option<glow::UniformLocation>,
@@ -124,6 +125,7 @@ pub struct Dynamic {
     meshes: HashMap<u64, GpuMesh>,
     textures: HashMap<u64, glow::Texture>,
     white: glow::Texture,
+    inst_vbo: glow::Buffer,
     aniso: bool,
     pub draws: u32,
     pub tris: u64,
@@ -160,6 +162,7 @@ fn compile(gl: &glow::Context, masked: bool) -> Prog {
             model: l("uModel"),
             joints: l("uJoints[0]"),
             skin: l("uSkin"),
+            inst: l("uInst"),
             cam: l("uCam"),
             uvm: l("uUvM"),
             mode: l("uMode"),
@@ -189,7 +192,8 @@ impl Dynamic {
         };
         let canvas = CanvasProg::new(gl, CANVAS_VS, CANVAS_FS, &["uVP", "uTint", "uSlotColor[0]", "uXu[0]", "uXv[0]", "uKinds", "uOps", "uParams", "uTex0", "uTex1", "uTex2"]);
         let part = CanvasProg::new(gl, PART_VS, PART_FS, &["uVP", "uCam", "uParams", "uFog", "uFogColor", "uTex"]);
-        Dynamic { progs, canvas, part, meshes: HashMap::new(), textures: HashMap::new(), white, aniso, draws: 0, tris: 0 }
+        let inst_vbo = unsafe { gl.create_buffer().unwrap() };
+        Dynamic { progs, canvas, part, meshes: HashMap::new(), textures: HashMap::new(), white, inst_vbo, aniso, draws: 0, tris: 0 }
     }
 
     pub fn has_mesh(&self, id: u64) -> bool {
@@ -331,7 +335,23 @@ impl Dynamic {
             let mut cur_tex: Option<Option<u64>> = None;
             let mut cur_state: Option<(Blend, bool)> = None;
             let mut overlay_cleared = false;
-            for d in draws.iter() {
+            let mut i = 0;
+            let mut inst_data: Vec<f32> = Vec::new();
+            while i < draws.len() {
+                let d = &draws[i];
+                // Run of identical draws that differ only by transform: one instanced call.
+                let batchable = d.joints.is_none() && d.blend != Blend::Alpha && d.blend != Blend::Add && d.blend != Blend::Multiply;
+                let mut run = 1;
+                if batchable {
+                    while i + run < draws.len() {
+                        let o = &draws[i + run];
+                        if o.mesh != d.mesh || o.joints.is_some() || o.tex != d.tex || o.lightmap != d.lightmap || o.blend != d.blend || o.cutoff != d.cutoff || o.two_sided != d.two_sided || o.light != d.light || o.color != d.color || o.uv != d.uv || o.overlay != d.overlay {
+                            break;
+                        }
+                        run += 1;
+                    }
+                }
+                i += run;
                 let Some(m) = self.meshes.get(&d.mesh) else { continue };
                 if d.overlay && !overlay_cleared {
                     gl.depth_mask(true);
@@ -396,6 +416,25 @@ impl Dynamic {
                     gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(m.ibo));
                     cur_vao = Some(d.mesh);
                 }
+                let instanced = run > 1;
+                gl.uniform_1_i32(p.inst.as_ref(), instanced as i32);
+                if instanced {
+                    inst_data.clear();
+                    for o in &draws[i - run..i] {
+                        inst_data.extend_from_slice(&o.model.to_cols_array());
+                    }
+                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.inst_vbo));
+                    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, std::slice::from_raw_parts(inst_data.as_ptr() as *const u8, inst_data.len() * 4), glow::STREAM_DRAW);
+                    for k in 0..4u32 {
+                        gl.enable_vertex_attrib_array(7 + k);
+                        gl.vertex_attrib_pointer_f32(7 + k, 4, glow::FLOAT, false, 64, k as i32 * 16);
+                        gl.vertex_attrib_divisor(7 + k, 1);
+                    }
+                } else {
+                    for k in 0..4u32 {
+                        gl.disable_vertex_attrib_array(7 + k);
+                    }
+                }
                 match &d.joints {
                     Some(j) => {
                         gl.uniform_1_i32(p.skin.as_ref(), 1);
@@ -422,9 +461,13 @@ impl Dynamic {
                 gl.uniform_4_f32(p.color.as_ref(), d.color[0], d.color[1], d.color[2], d.color[3]);
                 gl.uniform_1_f32(p.cutoff.as_ref(), d.cutoff);
                 gl.uniform_1_f32(p.fog_mix.as_ref(), if matches!(d.blend, Blend::Add | Blend::Multiply) { 0.0 } else { 1.0 });
-                gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+                if instanced {
+                    gl.draw_elements_instanced(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0, run as i32);
+                } else {
+                    gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+                }
                 self.draws += 1;
-                self.tris += m.count as u64 / 3;
+                self.tris += (m.count as u64 / 3) * run as u64;
             }
             gl.bind_vertex_array(None);
             gl.depth_mask(true);
