@@ -275,6 +275,7 @@ pub fn run(cfg: BootConfig, args: Args) {
         .init_resource::<LevelSnapshot>()
         .insert_non_send(sim)
         .add_systems(Startup, cluster_capacity)
+        .add_systems(PostUpdate, msaa_off)
         ;
     // GPU upload budget per frame (Bevy's render asset limiter); unset = no limit.
     if let Some(mb) = std::env::var("P2GAME_UPLOAD_MB").ok().and_then(|s| s.parse::<f64>().ok()).filter(|&m| m > 0.0) {
@@ -398,6 +399,17 @@ pub(crate) fn process_memory_mb() -> Option<(f64, f64, f64)> {
 /// The level's many point lights overflow Bevy's default GPU clustering buffers, which then grow
 /// at runtime ("Resizing the view clustering Z slice list", lighting glitches for a few frames).
 /// Start them large enough for POSTAL 2 maps.
+/// x96plus (Mali-G31): MSAA off on every camera (Bevy's default is 4x per camera).
+/// `P2_MSAA=1` keeps Bevy's default.
+fn msaa_off(mut commands: Commands, cams: Query<Entity, Added<Camera>>) {
+    if std::env::var_os("P2_MSAA").is_some() {
+        return;
+    }
+    for e in &cams {
+        commands.entity(e).insert(bevy::render::view::Msaa::Off);
+    }
+}
+
 fn cluster_capacity(settings: Option<ResMut<bevy::light::cluster::GlobalClusterSettings>>) {
     if let Some(gpu) = settings.and_then(|s| s.into_inner().gpu_clustering.as_mut()) {
         // Only the Z slice list overflowed. The index list is re-uploaded per view every frame
@@ -788,11 +800,24 @@ fn mesh_census(
     mut last: Local<f32>,
     q: Query<(&ViewVisibility, Has<p2view::zones::ZoneTag>, Has<bevy::mesh::skinning::SkinnedMesh>, Has<bevy::camera::visibility::VisibilityRange>, Has<LevelEntity>, Option<&bevy::camera::visibility::RenderLayers>), With<Mesh3d>>,
     mats: Query<(&ViewVisibility, &Mesh3d, Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<p2view::baked::BakedMaterial>>, Has<bevy::mesh::skinning::SkinnedMesh>)>,
+    aabbs: Query<(&ViewVisibility, Has<bevy::camera::primitives::Aabb>, Has<bevy::camera::visibility::NoFrustumCulling>), With<Mesh3d>>,
+    cams: Query<(&Camera, Option<&bevy::camera::visibility::RenderLayers>, &Projection)>,
 ) {
     if std::env::var_os("P2GAME_MESH_CENSUS").is_none() || time.elapsed_secs() - *last < 5.0 {
         return;
     }
     *last = time.elapsed_secs();
+    let (mut no_aabb, mut no_aabb_vis, mut nfc) = (0, 0, 0);
+    for (v, a, n) in &aabbs {
+        no_aabb += (!a) as u32;
+        no_aabb_vis += (!a && v.get()) as u32;
+        nfc += n as u32;
+    }
+    println!("mesh census: without Aabb {no_aabb} (visible {no_aabb_vis}), NoFrustumCulling {nfc}");
+    for (c, l, p) in &cams {
+        let far = if let Projection::Perspective(p) = p { p.far } else { 0.0 };
+        println!("mesh census: camera order {} active {} layers {:?} far {far}", c.order, c.is_active, l);
+    }
     let (mut total, mut vis, mut skinned, mut ranged, mut zoned, mut level, mut layered, mut other) = (0, 0, 0, 0, 0, 0, 0, 0);
     for (v, z, s, r, l, layers) in &q {
         total += 1;
@@ -1066,7 +1091,10 @@ fn report(
 ) {
     let (cams, mesh_q, lights_q) = rq;
     let std_mats = &materials;
-    let now = time.elapsed_secs_f64();
+    // Wall-clock time: Bevy's virtual clock clamps each frame to 250 ms (Time<Virtual>::max_delta),
+    // so slow frames all reported as exactly "250.0 ms (4 fps)".
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let now = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
     fr.wall_frames += 1;
     if fr.interactive {
         fr.dts.push(time.delta_secs() * 1000.0);

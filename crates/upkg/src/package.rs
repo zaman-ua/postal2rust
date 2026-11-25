@@ -54,18 +54,55 @@ pub struct Package {
     pub names: Vec<String>,
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
-    pub data: Vec<u8>,
+    pub data: PkgBytes,
+}
+
+/// Package file bytes: a read-only file mapping (clean page-cache pages the kernel can drop and
+/// re-read instead of swapping a heap copy) or an owned buffer (saves, in-memory packages).
+/// `P2_PKG_NO_MMAP=1` reads files into the heap as before.
+pub enum PkgBytes {
+    Owned(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+impl std::ops::Deref for PkgBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            PkgBytes::Owned(v) => v,
+            PkgBytes::Mapped(m) => m,
+        }
+    }
+}
+
+impl From<Vec<u8>> for PkgBytes {
+    fn from(v: Vec<u8>) -> Self {
+        PkgBytes::Owned(v)
+    }
+}
+
+fn map_file(path: &Path) -> std::io::Result<PkgBytes> {
+    if std::env::var_os("P2_PKG_NO_MMAP").is_some() {
+        return std::fs::read(path).map(PkgBytes::Owned);
+    }
+    let f = std::fs::File::open(path)?;
+    if f.metadata()?.len() == 0 {
+        return Ok(PkgBytes::Owned(Vec::new()));
+    }
+    // SAFETY: game packages are read-only data files nobody truncates while the game runs.
+    unsafe { memmap2::Mmap::map(&f) }.map(PkgBytes::Mapped)
 }
 
 impl Package {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let data = std::fs::read(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+        let data = map_file(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
         let name = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
         Self::parse(path.to_path_buf(), name, data)
     }
 
-    pub fn parse(path: PathBuf, name: String, data: Vec<u8>) -> Result<Self> {
+    pub fn parse(path: PathBuf, name: String, data: impl Into<PkgBytes>) -> Result<Self> {
+        let data: PkgBytes = data.into();
         let mut r = Reader::new(&data);
         if data.len() < 36 {
             return Err(Error::NotAPackage(0));
