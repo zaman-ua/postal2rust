@@ -20,7 +20,7 @@ use bevy::camera::visibility::{InheritedVisibility, NoFrustumCulling, RenderLaye
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::camera::ClearColorConfig;
-use p2gles::dynamic::{Blend, CanvasBlend, CanvasDraw, Draw, Dynamic, Env, Light, MeshIn, TexIn, UV_IDENTITY};
+use p2gles::dynamic::{Blend, CanvasBlend, CanvasDraw, Draw, ParticleDraw, Dynamic, Env, Light, MeshIn, TexIn, UV_IDENTITY};
 use p2gles::renderer::{Options, Renderer};
 use std::collections::HashSet;
 use p2view::scene::SceneData;
@@ -193,9 +193,13 @@ fn upload_mesh(g: &mut Gles, id: AssetId<Mesh>, mesh: &Mesh) -> bool {
         Some(VertexAttributeValues::Uint16x4(v)) => Some(v.clone()),
         _ => None,
     };
+    let blend_w: Option<Vec<[f32; 4]>> = match mesh.attribute(p2fx::ATTRIBUTE_BLEND) {
+        Some(VertexAttributeValues::Float32(v)) => Some(v.iter().map(|&b| [b, 0.0, 0.0, 0.0]).collect()),
+        _ => None,
+    };
     let weights = match mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT) {
         Some(VertexAttributeValues::Float32x4(v)) => Some(v.as_slice()),
-        _ => None,
+        _ => blend_w.as_deref(),
     };
     let indices: Vec<u32> = match mesh.indices() {
         Some(Indices::U32(i)) => i.clone(),
@@ -325,6 +329,7 @@ fn draw_frame(world: &mut World) {
         }
     }
     let mut passes: Vec<Vec<Draw>> = cams.iter().map(|_| Vec::new()).collect();
+    let mut parts: Vec<Vec<ParticleDraw>> = cams.iter().map(|_| Vec::new()).collect();
     let mut qd = world.query::<(
         Entity,
         &Mesh3d,
@@ -456,6 +461,32 @@ fn draw_frame(world: &mut World) {
             }
         }
     }
+    // p2fx particle / decal batches.
+    {
+        let mut pq = world.query::<(&Mesh3d, &MeshMaterial3d<p2fx::ParticleMaterial>, &InheritedVisibility, Option<&RenderLayers>)>();
+        let meshes = world.resource::<Assets<Mesh>>();
+        let images = world.resource::<Assets<Image>>();
+        let mats = world.resource::<Assets<p2fx::ParticleMaterial>>();
+        for (m, mm, vis, layers) in pq.iter(world) {
+            if !vis.get() {
+                continue;
+            }
+            let (Some(mesh), Some(pm)) = (meshes.get(&m.0), mats.get(&mm.0)) else { continue };
+            if mesh.count_vertices() <= 3 {
+                continue; // placeholder batch
+            }
+            if !upload_mesh(&mut gles, m.0.id(), mesh) {
+                continue;
+            }
+            let tex = pm.texture.as_ref().and_then(|h| images.get(h).filter(|img| upload_image(&mut gles, h.id(), img)).map(|_| aid(h.id())));
+            let el = layers.cloned().unwrap_or_default();
+            for (ci, c) in cams.iter().enumerate() {
+                if c.layers.intersects(&el) {
+                    parts[ci].push(ParticleDraw { mesh: aid(m.0.id()), tex, style: pm.key.style, z_test: pm.key.z_test, z_write: pm.key.z_write, alpha_ref: pm.params.x, alpha_test: pm.params.y > 0.5, order: pm.order });
+                }
+            }
+        }
+    }
     world.resource_mut::<GlBaked>().0 = baked;
 
     // HUD / menus: p2canvas batches (Mesh2d + CanvasMaterial), in painter's order (z).
@@ -557,6 +588,7 @@ fn draw_frame(world: &mut World) {
         let gl = &g.gl as *const glow::Context;
         // SAFETY: disjoint fields (gl is only read).
         g.dynamic.render(unsafe { &*gl }, vp, c.pos, &env, &mut passes[ci]);
+        g.dynamic.render_particles(unsafe { &*gl }, vp, c.pos, &env, &mut parts[ci]);
         draws_n += g.dynamic.draws;
         tris_n += g.dynamic.tris;
     }

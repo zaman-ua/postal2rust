@@ -218,3 +218,60 @@ void main() {
     oColor = vec4(pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), color.a);
 }
 "#;
+
+/// p2fx particles/decals (UE2 draw styles), computed in gamma space like the original.
+/// Vertex layout is the generic one: uv0, uv1, colour, and the sub-image blend factor in aW.x.
+pub const PART_FS: &str = r#"#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+uniform vec4 uParams;     // x alpha ref, y alpha test on, z style, w has texture
+uniform vec2 uFog;
+uniform vec3 uFogColor;
+in vec2 vUv;
+in vec2 vUv2;
+in vec4 vCol;
+in float vDist;
+in float vBlend;
+out vec4 oColor;
+void main() {
+    vec4 t = vec4(1.0);
+    if (uParams.w > 0.5) {
+        t = texture(uTex, vUv);
+        if (vBlend > 0.0) t = mix(t, texture(uTex, vUv2), vBlend);
+    }
+    int style = int(uParams.z + 0.5);
+    vec4 g;
+    if (style == 2) g = vec4(mix(vCol.rgb, t.rgb, vCol.a), t.a * vCol.a);
+    else g = t * vCol;
+    if (uParams.y > 0.5 && g.a <= uParams.x) discard;
+    vec3 c = g.rgb;
+    float f = clamp((vDist - uFog.x) / max(uFog.y - uFog.x, 1.0), 0.0, 1.0);
+    if (style == 0 || style == 1) c = mix(c, uFogColor, f);
+    else c *= 1.0 - f; // additive-like styles fade out in fog instead of tinting
+    oColor = vec4(c, g.a);
+}
+"#;
+
+pub const PART_VS: &str = r#"#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUv;
+layout(location=3) in vec2 aUv2;
+layout(location=4) in vec4 aCol;
+layout(location=5) in vec4 aW;
+uniform mat4 uVP;
+uniform vec3 uCam;
+out vec2 vUv;
+out vec2 vUv2;
+out vec4 vCol;
+out float vDist;
+out float vBlend;
+void main() {
+    gl_Position = uVP * vec4(aPos, 1.0);
+    vUv = aUv;
+    vUv2 = aUv2;
+    vCol = aCol;
+    vBlend = aW.x;
+    vDist = length(aPos - uCam);
+}
+"#;
