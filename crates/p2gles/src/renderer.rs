@@ -150,6 +150,49 @@ struct Uniforms {
 
 pub static MIPS_GENERATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// DXT1/3/5 mips uploaded as-is (GL_EXT_texture_compression_s3tc): 4-8x less memory and
+/// texture bandwidth than the RGBA8 decode. The chain stops where the package's does.
+unsafe fn upload_bc(gl: &glow::Context, w: u32, h: u32, fmt: PixelFormat, mips: &[Vec<u8>], aniso: bool) -> Option<glow::Texture> {
+    let (gl_fmt, block) = match fmt {
+        PixelFormat::Bc1 => (0x83F1u32, 8u32), // COMPRESSED_RGBA_S3TC_DXT1_EXT (keeps 1-bit alpha)
+        PixelFormat::Bc2 => (0x83F2, 16),      // DXT3
+        PixelFormat::Bc3 => (0x83F3, 16),      // DXT5
+        PixelFormat::Rgba8 => return None,
+    };
+    unsafe {
+        let t = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(t));
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        let mut n = 0;
+        for (i, m) in mips.iter().enumerate() {
+            let (lw, lh) = ((w >> i).max(1), (h >> i).max(1));
+            let need = (lw.div_ceil(4) * lh.div_ceil(4) * block) as usize;
+            if m.len() < need {
+                break;
+            }
+            gl.compressed_tex_image_2d(glow::TEXTURE_2D, i as i32, gl_fmt as i32, lw as i32, lh as i32, 0, need as i32, &m[..need]);
+            n += 1;
+        }
+        if n == 0 || gl.get_error() != glow::NO_ERROR {
+            gl.delete_texture(t);
+            return None;
+        }
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, n - 1);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, if n > 1 { glow::LINEAR_MIPMAP_LINEAR } else { glow::LINEAR } as i32);
+        if n > 1 {
+            if let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso) {
+                gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a);
+            }
+        }
+        BC_UPLOADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(t)
+    }
+}
+
+pub static BC_UPLOADED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8]], repeat: bool, aniso: bool) -> glow::Texture {
     unsafe {
         let t = gl.create_texture().unwrap();
@@ -379,6 +422,8 @@ impl Renderer {
                     if t.format == PixelFormat::Rgba8 {
                         let mips: Vec<&[u8]> = t.mips.iter().map(|m| m.as_slice()).collect();
                         textures.insert(k.tex, upload_tex(&gl, t.width, t.height, &mips, true, ext_aniso));
+                    } else if let Some(tx) = upload_bc(&gl, t.width, t.height, t.format, &t.mips, ext_aniso) {
+                        textures.insert(k.tex, tx);
                     }
                 }
                 if k.lm != NONE && !lightmaps.contains_key(&k.lm) {
@@ -404,7 +449,7 @@ impl Renderer {
                 }
             }
             let white = upload_tex(&gl, 1, 1, &[&[153, 153, 153, 255]], true, false);
-            println!("textures: {} diffuse ({} with generated mips), {} lightmaps, {} alpha maps uploaded in {} ms", textures.len(), MIPS_GENERATED.load(std::sync::atomic::Ordering::Relaxed), lightmaps.len(), alphas.len(), t1.elapsed().as_millis());
+            println!("textures: {} diffuse ({} DXT as-is, {} with generated mips), {} lightmaps, {} alpha maps uploaded in {} ms", textures.len(), BC_UPLOADED.load(std::sync::atomic::Ordering::Relaxed), MIPS_GENERATED.load(std::sync::atomic::Ordering::Relaxed), lightmaps.len(), alphas.len(), t1.elapsed().as_millis());
 
             let fog = opts.fog.or(data.zone.as_ref().and_then(|z| z.fog).map(|(_, s, e)| (s, e))).unwrap_or((250.0, 1400.0));
             let fog_color = data.zone.as_ref().and_then(|z| z.fog).map(|(c, _, _)| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]).unwrap_or([0.55, 0.68, 0.85]);

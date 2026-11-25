@@ -269,7 +269,7 @@ fn main() {
     let lib = upkg::library::Library::new(&args.game).unwrap_or_else(|e| panic!("cannot index game install at {}: {e}", args.game.display()));
     let path = lib.map_path(&args.map).unwrap_or_else(|| panic!("map '{}' not found", args.map));
     let map = Arc::new(upkg::Package::open(&path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display())));
-    let data = scene::build_scene(&lib, &map, &Options { gpu_bc: false, projectors: false }).unwrap_or_else(|e| panic!("build_scene: {e}"));
+    let data = scene::build_scene(&lib, &map, &Options { gpu_bc: std::env::var_os("P2GLES_NO_BC").is_none(), projectors: false }).unwrap_or_else(|e| panic!("build_scene: {e}"));
     let s = &data.stats;
     println!("build_scene {} in {} ms (wall {} ms): bsp_polys={} instances={} world_batches={} materials={} textures={} lightmaps={} terrain_layers={} spawn_found={}", args.map, s.load_ms, t0.elapsed().as_millis(), s.bsp_polys, data.instances.len(), data.world.len(), data.materials.len(), data.textures.len(), data.lightmaps.len(), data.terrain.len(), data.spawn_found);
     let el = EventLoop::new().unwrap();
