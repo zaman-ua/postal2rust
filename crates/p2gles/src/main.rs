@@ -137,7 +137,7 @@ impl ApplicationHandler for App {
             }
         }
         let data = self.data.take().unwrap();
-        let ropts = renderer::Options { chunk: self.args.chunk, fog: self.args.fog, no_cull: self.args.no_cull };
+        let ropts = renderer::Options { chunk: self.args.chunk, fog: self.args.fog, no_cull: self.args.no_cull, skip_exports: Default::default() };
         let r = renderer::Renderer::new(gl, &data, &ropts);
         // Camera.
         match self.args.cam {

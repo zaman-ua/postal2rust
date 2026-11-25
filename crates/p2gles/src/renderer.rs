@@ -79,6 +79,8 @@ pub struct Options {
     pub chunk: f32,
     pub fog: Option<(f32, f32)>,
     pub no_cull: bool,
+    /// Actors (map export indices) left out of the bake: movers, drawn by the dynamic pass.
+    pub skip_exports: std::collections::HashSet<usize>,
 }
 
 struct Baker {
@@ -127,6 +129,8 @@ pub struct Renderer {
     pub stats: Stats,
     us: [Uniforms; 2],
     pub total_tris: u64,
+    /// false: the host clears (multi-camera frames); `render` only draws.
+    pub clear: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -314,7 +318,7 @@ impl Renderer {
                 bake_split(&mut baker, key, m, |i| V { pos: m.positions[i], uv: m.uvs[i], uv2: if m.uvs_b.is_empty() { [0.0; 2] } else { m.uvs_b[i] }, col: [0, 0, 0, 255] });
             }
             // Static meshes: bake the transform, one chunk per instance origin cell.
-            for inst in &data.instances {
+            for inst in data.instances.iter().filter(|i| !opts.skip_exports.contains(&i.export)) {
                 let src = &data.meshes[inst.mesh as usize];
                 let mat = &data.materials[inst.material as usize];
                 if src.positions.is_empty() {
@@ -458,7 +462,7 @@ impl Renderer {
             gl.enable(glow::CULL_FACE);
             gl.cull_face(glow::BACK);
             gl.front_face(glow::CCW);
-            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris }
+            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris, clear: true }
         }
     }
 
@@ -498,8 +502,13 @@ impl Renderer {
             gl.viewport(0, 0, size.0 as i32, size.1 as i32);
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
-            gl.clear_color(self.fog_color[0], self.fog_color[1], self.fog_color[2], 1.0);
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            gl.enable(glow::DEPTH_TEST);
+            gl.enable(glow::CULL_FACE);
+            gl.cull_face(glow::BACK);
+            if self.clear {
+                gl.clear_color(self.fog_color[0], self.fog_color[1], self.fog_color[2], 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            }
             gl.bind_vertex_array(Some(self.vao));
             for (pg, u) in self.progs.iter().zip(&self.us) {
                 gl.use_program(Some(*pg));

@@ -291,7 +291,7 @@ pub fn run(cfg: BootConfig, args: Args) {
         .add_systems(
             Update,
             (
-                (load_scene, tag_level_entities, tick_script, travel, merge_statics, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, pose_rigs, crate::ui::hide_own_body, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override).chain(),
+                (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, pose_rigs, crate::ui::hide_own_body, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override).chain(),
                 (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide).chain(),
             )
                 .chain(),
@@ -613,9 +613,10 @@ fn load_scene(
     let mut data = scene::build_scene(&lib, &map, &scene::Options { gpu_bc: gpu_bc || use_gles, projectors: false }).unwrap_or_else(|e| panic!("scene: {e}"));
     let t_build = t0.elapsed().as_secs_f32();
     if let Some(g) = gles.as_mut() {
-        g.load_world(&data);
+        g.load_world(&data, data.movers.iter().map(|m| m.export).collect());
     }
-    let merge = std::env::var_os("P2GAME_NO_MERGE").is_none();
+    // With p2gles the statics are baked: nothing to merge.
+    let merge = std::env::var_os("P2GAME_NO_MERGE").is_none() && !use_gles;
     let mut spawned = spawn::spawn_scene_with(&mut commands, &mut data, spawn::SpawnOptions { unlit: args.unlit, baked: true, merge }, &mut images, &mut meshes, &mut materials);
     println!("load: scene built in {t_build:.2} s, spawned in {:.2} s ({:.2} s since boot)", t0.elapsed().as_secs_f32() - t_build, boot_secs());
 
@@ -664,6 +665,11 @@ fn load_scene(
     }
     for (m, ents) in &spawned.movers {
         link(m.export, ents, &mut driven);
+    }
+    if use_gles {
+        let before: std::collections::HashSet<Entity> = snap.before.clone().unwrap_or_default().into_iter().collect();
+        let movers = spawned.movers.iter().flat_map(|(_, e)| e.iter().copied()).collect();
+        commands.insert_resource(crate::gles::ClassifyBaked { before, movers });
     }
     println!(
         "render: {} actor entity groups linked to VM actors ({static_groups} static mesh actors, {} movers; {} static mesh instances; {gone} map actors absent from the save hidden)",
