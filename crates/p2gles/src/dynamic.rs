@@ -336,6 +336,7 @@ impl Dynamic {
             let mut cur_tex: Option<Option<u64>> = None;
             let mut cur_state: Option<(Blend, bool)> = None;
             let mut overlay_cleared = false;
+            let mut cur_cw = false;
             let mut i = 0;
             let mut inst_data: Vec<f32> = Vec::new();
             while i < draws.len() {
@@ -417,6 +418,12 @@ impl Dynamic {
                     gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(m.ibo));
                     cur_vao = Some(d.mesh);
                 }
+                // Mirrored transforms (negative scale) flip the winding.
+                let cw = d.joints.is_none() && d.model.determinant() < 0.0;
+                if cw != cur_cw {
+                    gl.front_face(if cw { glow::CW } else { glow::CCW });
+                    cur_cw = cw;
+                }
                 let instanced = run > 1;
                 gl.uniform_1_i32(p.inst.as_ref(), instanced as i32);
                 if instanced {
@@ -470,6 +477,7 @@ impl Dynamic {
                 self.draws += 1;
                 self.tris += (m.count as u64 / 3) * run as u64;
             }
+            gl.front_face(glow::CCW);
             gl.bind_vertex_array(None);
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
