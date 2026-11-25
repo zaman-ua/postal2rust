@@ -598,6 +598,36 @@ fn draw_frame(world: &mut World) {
         g.dynamic.render_canvas(unsafe { &*gl }, size, &canvas);
         draws_n += g.dynamic.draws;
     }
+    // Screenshot requests (Bevy's own capture needs its renderer): read the finished frame.
+    let shots: Vec<Entity> = world.query_filtered::<Entity, With<bevy::render::view::screenshot::Screenshot>>().iter(world).collect();
+    if !shots.is_empty() {
+        use glow::HasContext;
+        let (w, h) = size;
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            g.gl.finish();
+            g.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            g.gl.read_pixels(0, 0, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut buf)));
+        }
+        let row = (w * 4) as usize;
+        let mut flipped = Vec::with_capacity(buf.len());
+        for y in (0..h as usize).rev() {
+            flipped.extend_from_slice(&buf[y * row..(y + 1) * row]);
+        }
+        for e in shots {
+            let image = Image::new(
+                bevy::render::render_resource::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                bevy::render::render_resource::TextureDimension::D2,
+                flipped.clone(),
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            );
+            world.trigger(bevy::render::view::screenshot::ScreenshotCaptured { entity: e, image });
+            if let Ok(ec) = world.get_entity_mut(e) {
+                ec.despawn();
+            }
+        }
+    }
     let _ = g.surface.swap_buffers(&g.ctx);
     g.frames += 1;
     g.win_frames += 1;
