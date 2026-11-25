@@ -598,6 +598,12 @@ fn draw_frame(world: &mut World) {
         g.dynamic.render_canvas(unsafe { &*gl }, size, &canvas);
         draws_n += g.dynamic.draws;
     }
+    // Brightness / contrast / gamma from the options menu (a component of the canvas camera).
+    if let Some(gr) = world.query::<&crate::settings::Grade>().iter(world).next().copied() {
+        let gl = &g.gl as *const glow::Context;
+        // SAFETY: disjoint fields (gl is only read).
+        g.dynamic.render_grade(unsafe { &*gl }, size, gr.offset, gr.slope, gr.inv_gamma);
+    }
     // Screenshot requests (Bevy's own capture needs its renderer): read the finished frame.
     let shots: Vec<Entity> = world.query_filtered::<Entity, With<bevy::render::view::screenshot::Screenshot>>().iter(world).collect();
     if !shots.is_empty() {

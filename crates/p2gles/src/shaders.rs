@@ -281,3 +281,28 @@ void main() {
     vDist = length(aPos - uCam);
 }
 "#;
+
+/// Display grade (brightness/contrast/gamma) over the finished frame; the frame is already in
+/// display (gamma) space here.
+pub const GRADE_VS: &str = r#"#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    vUv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+pub const GRADE_FS: &str = r#"#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+uniform vec3 uGrade; // offset, slope, inverse gamma
+in vec2 vUv;
+out vec4 oColor;
+void main() {
+    vec3 s = texture(uTex, vUv).rgb;
+    s = (s - 0.5) * uGrade.y + vec3(0.5 + uGrade.x);
+    oColor = vec4(pow(clamp(s, 0.0, 1.0), vec3(uGrade.z)), 1.0);
+}
+"#;

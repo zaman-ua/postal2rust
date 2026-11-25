@@ -2,7 +2,7 @@
 //! cached by caller-chosen ids; the host uploads a mesh/texture once and refers to it afterwards.
 
 use crate::renderer::{upload_bc, upload_tex};
-use crate::shaders::{CANVAS_FS, CANVAS_VS, DYN_FS, DYN_VS, PART_FS, PART_VS};
+use crate::shaders::{GRADE_FS, GRADE_VS, CANVAS_FS, CANVAS_VS, DYN_FS, DYN_VS, PART_FS, PART_VS};
 use bevy_math::{Mat4, Vec3};
 use glow::HasContext;
 use p2view::scene::PixelFormat;
@@ -122,6 +122,7 @@ pub struct Dynamic {
     progs: [Prog; 2],
     canvas: CanvasProg,
     part: CanvasProg,
+    grade: Option<GradePass>,
     meshes: HashMap<u64, GpuMesh>,
     textures: HashMap<u64, glow::Texture>,
     white: glow::Texture,
@@ -193,7 +194,7 @@ impl Dynamic {
         let canvas = CanvasProg::new(gl, CANVAS_VS, CANVAS_FS, &["uVP", "uTint", "uSlotColor[0]", "uXu[0]", "uXv[0]", "uKinds", "uOps", "uParams", "uTex0", "uTex1", "uTex2"]);
         let part = CanvasProg::new(gl, PART_VS, PART_FS, &["uVP", "uCam", "uParams", "uFog", "uFogColor", "uTex"]);
         let inst_vbo = unsafe { gl.create_buffer().unwrap() };
-        Dynamic { progs, canvas, part, meshes: HashMap::new(), textures: HashMap::new(), white, inst_vbo, aniso, draws: 0, tris: 0 }
+        Dynamic { progs, canvas, part, grade: None, meshes: HashMap::new(), textures: HashMap::new(), white, inst_vbo, aniso, draws: 0, tris: 0 }
     }
 
     pub fn has_mesh(&self, id: u64) -> bool {
@@ -676,6 +677,52 @@ impl Dynamic {
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
+        }
+    }
+}
+
+/// Fullscreen colour grade state (created on first use).
+pub struct GradePass {
+    prog: CanvasProg,
+    tex: glow::Texture,
+    vao: glow::VertexArray,
+    size: (u32, u32),
+}
+
+impl Dynamic {
+    /// Brightness/contrast/gamma over the whole frame: copies the framebuffer to a texture and draws
+    /// it back through the grade. `offset`/`slope`/`inv_gamma` as the Bevy `Grade` shader.
+    pub fn render_grade(&mut self, gl: &glow::Context, size: (u32, u32), offset: f32, slope: f32, inv_gamma: f32) {
+        unsafe {
+            if self.grade.is_none() {
+                let prog = CanvasProg::new(gl, GRADE_VS, GRADE_FS, &["uTex", "uGrade"]);
+                let tex = gl.create_texture().unwrap();
+                let vao = gl.create_vertex_array().unwrap();
+                self.grade = Some(GradePass { prog, tex, vao, size: (0, 0) });
+            }
+            let g = self.grade.as_mut().unwrap();
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(g.tex));
+            if g.size != size {
+                gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGB8 as i32, size.0 as i32, size.1 as i32, 0, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+                g.size = size;
+            }
+            gl.copy_tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, 0, 0, size.0 as i32, size.1 as i32);
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::CULL_FACE);
+            gl.depth_mask(false);
+            gl.use_program(Some(g.prog.p));
+            gl.uniform_3_f32(g.prog.loc["uGrade"].as_ref(), offset, slope, inv_gamma);
+            gl.bind_vertex_array(Some(g.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_vertex_array(None);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_mask(true);
         }
     }
 }

@@ -468,10 +468,10 @@ pub(crate) fn install(sim: &mut crate::window::Sim) {
 
 /// Display grade over the finished frame (drawn by the canvas camera, after the HUD).
 #[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Default)]
-struct Grade {
-    offset: f32,
-    slope: f32,
-    inv_gamma: f32,
+pub(crate) struct Grade {
+    pub(crate) offset: f32,
+    pub(crate) slope: f32,
+    pub(crate) inv_gamma: f32,
     _pad: f32,
 }
 
