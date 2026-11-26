@@ -52,7 +52,11 @@ impl<C: SyncComponent<F>, F: Send + Sync + 'static> Plugin for SyncComponentPlug
         app.world_mut()
             .register_component_hooks::<C>()
             .on_remove(|mut world, context| {
-                let mut pending = world.resource_mut::<PendingSyncEntity>();
+                // Without a RenderApp (p2gles: `backends: None`) there is no render world to sync:
+                // the queue does not exist, and nothing would ever drain it.
+                let Some(mut pending) = world.get_resource_mut::<PendingSyncEntity>() else {
+                    return;
+                };
                 pending.push(EntityRecord::ComponentRemoved(
                     context.entity,
                     |mut entity| {
