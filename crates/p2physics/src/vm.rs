@@ -110,7 +110,7 @@ pub struct VmBridge {
     /// Per-class slot tables (shared by clones).
     slots: Rc<RefCell<FastMap<ClassId, Rc<Slots>>>>,
     /// Bound objects in object order (rebuilt after add/remove), for `pull_dynamic`.
-    order: Option<Vec<ObjId>>,
+    order: Option<Rc<Vec<(ObjId, ActorId)>>>,
     /// The Physics value last pushed to each object. A different value in the VM means script
     /// called SetPhysics since (e.g. PlayDying's PHYS_KarmaRagDoll); push leaves it for the next
     /// pull instead of overwriting it with the physics actor's stale mode.
@@ -473,21 +473,18 @@ impl VmBridge {
     /// Pulls every bound actor that physics can move (non-static actors and movers), in object
     /// order. Destroyed objects are skipped.
     pub fn pull_dynamic(&mut self, vm: &Vm, world: &mut PhysWorld) {
-        let order = match self.order.take() {
-            Some(o) => o,
-            None => {
-                let mut o: Vec<ObjId> = self.to_phys.keys().copied().collect();
-                o.sort_unstable();
-                o
-            }
-        };
-        for &o in &order {
-            let Some(id) = self.phys(o) else { continue };
-            if world.get(id).is_some_and(|a| !a.is_static || a.is_mover()) && vm.objects.get(o).is_some_and(|x| !x.deleted) {
+        let order = self.order.get_or_insert_with(|| {
+            let mut pairs: Vec<_> = self.to_phys.iter().map(|(&obj, &id)| (obj, id)).collect();
+            pairs.sort_unstable();
+            Rc::new(pairs)
+        }).clone();
+        for &(o, id) in order.iter() {
+            let Some(actor) = world.get(id) else { continue };
+            if (!actor.is_static || actor.is_mover()) && vm.objects.get(o).is_some_and(|x| !x.deleted) {
                 // No slot of the object written since script and physics last agreed (same map
                 // epoch): a pull would read back exactly what physics holds. Skip it.
                 let in_sync = !dirty_off()
-                    && world.get(id).is_some_and(|a| self.sync.borrow().get(&o) == Some(&SyncPoint::new(vm.objects[o].slots.generation(), self.epoch.get(), a)));
+                    && self.sync.borrow().get(&o) == Some(&SyncPoint::new(vm.objects[o].slots.generation(), self.epoch.get(), actor));
                 if in_sync {
                     let mut st = self.dirty_stats.get();
                     st.0 += 1;
@@ -513,7 +510,6 @@ impl VmBridge {
                 self.pull(vm, world, o);
             }
         }
-        self.order = Some(order);
     }
 
     /// Pushes only the actors physics moved since the last call. Used after a single script call
@@ -553,7 +549,7 @@ impl VmBridge {
         let (Some(obj), Some(a)) = (self.obj(id), world.get(id)) else { return };
         let s = self.slots_of(vm, obj);
         let script_physics = s.0[P::Physics as usize].and_then(|i| vm.objects[obj].slots.get(i)).map(|v| v.as_int() as u8);
-        if std::env::var_os("P2GAME_JUMP_TRACE").is_some() && a.is_player() {
+        if jump_trace() && a.is_player() {
             let sv = s.0[P::Velocity as usize].and_then(|i| vm.objects[obj].slots.get(i)).map(|v| v.as_vec()[2]).unwrap_or(0.0);
             if sv > 100.0 && a.velocity.z < 1.0 {
                 println!("PUSHOVER {} script vz {sv:.0} phys {:?} vz {:.0} script phys {script_physics:?} stack {}", vm.object_name(obj), a.physics, a.velocity.z, vm.call_stack_summary());

@@ -200,15 +200,27 @@ impl AnimSet {
 #[derive(Clone, Copy)]
 enum Bones<'a> {
     All,
-    /// Flags by bone index. Must contain the parent of every bone it contains.
-    Only(&'a [bool]),
+    /// The same bones as a membership mask and in skeleton order, including all ancestors.
+    Only { mask: &'a [bool], indices: &'a [usize] },
 }
 
-impl Bones<'_> {
+impl<'a> Bones<'a> {
+    #[inline]
+    fn indices(self, count: usize) -> impl Iterator<Item = usize> + 'a {
+        let len = match self {
+            Bones::All => count,
+            Bones::Only { indices, .. } => indices.len(),
+        };
+        (0..len).map(move |i| match self {
+            Bones::All => i,
+            Bones::Only { indices, .. } => indices[i],
+        })
+    }
+
     fn contains(self, bone: usize) -> bool {
         match self {
             Bones::All => true,
-            Bones::Only(set) => set[bone],
+            Bones::Only { mask, .. } => mask[bone],
         }
     }
 }
@@ -416,6 +428,8 @@ pub struct AnimInstance {
     /// Buffers of the partial pose behind `attachment_transforms`.
     partial_pose: Vec<BoneTransform>,
     partial_world: Vec<Mat4>,
+    partial_mask: Vec<bool>,
+    partial_indices: Vec<usize>,
     /// Mesh-space bone matrices forced by physics (ragdoll); replaces the animated pose.
     physics_pose: Option<Vec<Mat4>>,
 }
@@ -442,6 +456,8 @@ impl AnimInstance {
             scratch_sampled: Vec::new(),
             partial_pose: Vec::new(),
             partial_world: Vec::new(),
+            partial_mask: Vec::new(),
+            partial_indices: Vec::new(),
             physics_pose: None,
         };
         s.evaluate();
@@ -518,12 +534,18 @@ impl AnimInstance {
     /// has no sequence.
     fn sample_channel_into(&self, ch: &Channel, bones: Bones, out: &mut Vec<Option<BoneTransform>>) -> bool {
         let Some((l, s)) = ch.seq.as_ref() else { return false };
-        out.clear();
         out.resize(self.skeleton.len(), None);
+        match bones {
+            Bones::All => out.fill(None),
+            Bones::Only { indices, .. } => {
+                for &b in indices { out[b] = None; }
+            }
+        }
         l.sample_bones(*s, ch.frame, ch.looping, bones, out);
         if let Some(from) = &ch.tween_from {
             let t = if ch.tween_dur > 0.0 { (ch.tween_t / ch.tween_dur).clamp(0.0, 1.0) } else { 1.0 };
-            for (b, o) in out.iter_mut().enumerate().filter(|(b, _)| bones.contains(*b)) {
+            for b in bones.indices(out.len()) {
+                let o = &mut out[b];
                 let target = o.unwrap_or(self.skeleton.ref_pose[b]);
                 *o = Some(BoneTransform::lerp(from[b], target, t));
             }
@@ -823,15 +845,25 @@ impl AnimInstance {
         if !self.dirty || self.physics_pose.is_some() || found.is_empty() {
             return found.into_iter().map(|(id, a)| (id, x * self.bone_matrices()[a.bone] * a.relative)).collect();
         }
-        let mut chain = vec![false; self.skeleton.len()];
+        let mut chain = std::mem::take(&mut self.partial_mask);
+        let mut indices = std::mem::take(&mut self.partial_indices);
+        chain.resize(self.skeleton.len(), false);
         for (_, a) in &found {
             let mut b = a.bone;
-            while !std::mem::replace(&mut chain[b], true) && b != 0 {
+            while !std::mem::replace(&mut chain[b], true) {
+                indices.push(b);
+                if b == 0 { break; }
                 b = self.skeleton.parents[b];
             }
         }
         let (mut pose, mut world) = (std::mem::take(&mut self.partial_pose), std::mem::take(&mut self.partial_world));
-        self.animate(Bones::Only(&chain), &mut pose, &mut world);
+        indices.sort_unstable();
+        self.animate(Bones::Only { mask: &chain, indices: &indices }, &mut pose, &mut world);
+        for b in indices.drain(..) {
+            chain[b] = false;
+        }
+        self.partial_mask = chain;
+        self.partial_indices = indices;
         let out = found.into_iter().map(|(id, a)| (id, x * world[a.bone] * a.relative)).collect();
         (self.partial_pose, self.partial_world) = (pose, world);
         out
@@ -948,8 +980,13 @@ impl AnimInstance {
     fn animate(&mut self, bones: Bones, pose: &mut Vec<BoneTransform>, world: &mut Vec<Mat4>) {
         let skel = self.skeleton.clone();
         let n = skel.len();
-        pose.clear();
-        pose.extend_from_slice(&skel.ref_pose);
+        pose.resize(n, BoneTransform::IDENTITY);
+        match bones {
+            Bones::All => pose.copy_from_slice(&skel.ref_pose),
+            Bones::Only { indices, .. } => {
+                for &b in indices { pose[b] = skel.ref_pose[b]; }
+            }
+        }
         let mut sampled: Vec<Option<BoneTransform>> = std::mem::take(&mut self.scratch_sampled);
         for (c, ch) in self.channels.iter().enumerate() {
             let weight = if c == 0 { 1.0 } else { ch.alpha };
@@ -959,8 +996,8 @@ impl AnimInstance {
             if !self.sample_channel_into(ch, bones, &mut sampled) {
                 continue;
             }
-            for (b, s) in sampled.iter().enumerate() {
-                let Some(s) = *s else { continue };
+            for b in bones.indices(n) {
+                let Some(s) = sampled[b] else { continue };
                 if c > 0 {
                     if let Some(r) = ch.root {
                         if !skel.in_subtree(b, r) {
@@ -975,7 +1012,11 @@ impl AnimInstance {
         if let Some(r) = self.channel0_root() {
             self.root_current = r;
         } else {
-            self.root_current = pose.first().copied().unwrap_or(BoneTransform::IDENTITY);
+            self.root_current = if n > 0 && !bones.contains(0) {
+                skel.ref_pose[0]
+            } else {
+                pose.first().copied().unwrap_or(BoneTransform::IDENTITY)
+            };
         }
         if self.root_lock != 0 && n > 0 {
             if let Some((l, s)) = self.channels.first().and_then(|c| c.seq.clone()) {
@@ -991,7 +1032,7 @@ impl AnimInstance {
         // Bone controllers, in bone order so parents are final before children.
         if !self.loc_ctrl.is_empty() || !self.rot_ctrl.is_empty() {
             let mut world_rot = vec![Quat::IDENTITY; n];
-            for b in (0..n).filter(|&b| bones.contains(b)) {
+            for b in bones.indices(n) {
                 if let Some(l) = self.loc_ctrl.get(&b) {
                     pose[b].pos += l.offset * l.alpha;
                 }
@@ -1009,14 +1050,14 @@ impl AnimInstance {
         }
         // Mesh-space matrices with bone scales.
         let scale = self.bone_scales();
-        world.clear();
         world.resize(n, Mat4::IDENTITY);
-        for b in (0..n).filter(|&b| bones.contains(b)) {
+        for b in bones.indices(n) {
             let local = match scale.get(b) {
                 Some(s) if *s != 1.0 => pose[b].mat() * Mat4::from_scale(Vec3::splat(*s)),
                 _ => pose[b].mat(),
             };
-            world[b] = if b == 0 || skel.parents[b] == b { local } else { world[skel.parents[b]] * local };
+            // A forward parent has no computed matrix in this evaluation.
+            world[b] = if b == 0 || skel.parents[b] >= b { local } else { world[skel.parents[b]] * local };
         }
     }
 
@@ -1254,6 +1295,22 @@ mod tests {
         let q = i.local_pose()[2].rot;
         let (axis, angle) = q.to_axis_angle();
         angle.to_degrees() * axis.z.signum()
+    }
+
+    #[test]
+    fn animated_attachment_subsets_match_full_pose_across_ticks() {
+        let (mut partial, mut full) = (inst(), inst());
+        for actor in [&mut partial, &mut full] {
+            actor.attach_to_bone(1, "root", Vec3::ZERO, [0; 3]);
+            actor.attach_to_bone(2, "arm", Vec3::Y, [0; 3]);
+            actor.play_anim("bend", 1.0, 0.2, 0);
+        }
+        for ids in [&[2, 1, 2][..], &[1], &[2]] {
+            partial.tick(0.15, &mut NoEvents);
+            full.tick(0.15, &mut NoEvents);
+            let expected: Vec<_> = ids.iter().map(|&id| (id, full.attachment_transform(id).unwrap())).collect();
+            assert_eq!(partial.attachment_transforms(ids), expected);
+        }
     }
 
     #[test]

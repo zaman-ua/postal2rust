@@ -248,11 +248,19 @@ fn host_hooks_receive_world_natives() {
 fn timers_and_lifespan() {
     let mut vm = vm_or_skip!();
     vm.init_world(None).unwrap();
-    let light = vm.find_class("Engine", "TestInfo").unwrap();
-    let l = vm.spawn_actor(light, SpawnParams::default(), true).unwrap();
+    let trigger = vm.find_class("Engine", "Trigger").unwrap();
+    let l = vm.spawn_actor(trigger, SpawnParams::default(), true).unwrap();
     let actor = vm.find_class("Engine", "Actor").unwrap();
+    // Give the VM a chance to cache this actor as idle before SetTimer.
+    vm.tick_actor(l, 0.1);
     vm.call(actor, Some(l), "SetTimer", vec![Value::Float(0.5), Value::Bool(true)]).unwrap();
     assert_eq!(vm.get_prop(l, "TimerRate"), Some(&Value::Float(0.5)));
+    vm.tick_actor(l, 0.25);
+    assert_eq!(vm.get_prop(l, "TimerCounter"), Some(&Value::Float(0.25)));
+    vm.tick_actor(l, 0.25);
+    assert_eq!(vm.get_prop(l, "TimerCounter"), Some(&Value::Float(0.0)));
+    vm.call(actor, Some(l), "SetTimer", vec![Value::Float(0.0), Value::Bool(false)]).unwrap();
+    vm.tick_actor(l, 0.1);
     vm.set_prop(l, "LifeSpan", Value::Float(1.0));
     for _ in 0..9 {
         vm.tick_world(0.1);

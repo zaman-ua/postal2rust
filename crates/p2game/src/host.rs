@@ -549,18 +549,20 @@ impl GameHost {
         // child placed before its parent had moved used the parent's previous transform: head
         // boltons trailed the head by a frame and jittered or sank in while walking. Place
         // parents first (attachment depth order).
-        let owners: Vec<ObjId> = self.anims.borrow().iter().filter(|(a, x)| x.inst.attachments().next().is_some() && vm.objects.get(**a).is_some_and(|o| !o.deleted)).map(|(a, _)| *a).collect();
         let depth = |vm: &Vm, mut a: ObjId| {
             let mut d = 0;
             while d < 8 {
-                let bone = vm.field(a, prop!("AttachmentBone")).map(|v| v.as_name()).unwrap_or_default();
-                let Some(b) = vm.field(a, prop!("Base")).and_then(|v| v.as_obj()).filter(|_| !bone.is_empty() && !bone.eq_ignore_ascii_case("None")) else { break };
+                let Some(Value::Name(bone) | Value::Str(bone)) = vm.field(a, prop!("AttachmentBone")) else { break };
+                if bone.is_empty() || bone.eq_ignore_ascii_case("None") { break; }
+                let Some(b) = vm.field(a, prop!("Base")).and_then(Value::as_obj) else { break };
                 a = b;
                 d += 1;
             }
             d
         };
-        let mut order: Vec<(usize, ObjId)> = owners.into_iter().map(|a| (depth(vm, a), a)).collect();
+        let mut order: Vec<(usize, ObjId)> = self.anims.borrow().iter()
+            .filter(|(a, x)| x.inst.attachments().next().is_some() && vm.objects.get(**a).is_some_and(|o| !o.deleted))
+            .map(|(&a, _)| (depth(vm, a), a)).collect();
         order.sort_unstable();
         for (_, a) in order {
             self.place_children(vm, a);
@@ -569,8 +571,7 @@ impl GameHost {
 
     /// Moves every actor attached to `a`'s bones to its bone transform.
     fn place_children(&self, vm: &mut Vm, a: ObjId) {
-        let mut moves = Vec::new();
-        {
+        let (world, moves) = {
             let mut m = self.anims.borrow_mut();
             let Some(x) = m.get_mut(&a) else { return };
             let world = skel_actor_world(vm, a, x.inst.skeleton.mesh_xform);
@@ -583,12 +584,14 @@ impl GameHost {
                     x.inst.set_attachment_relative(id, rel_l, rel_r);
                 }
             }
-            moves.extend(x.inst.attachment_transforms(&ids).into_iter().map(|(id, t)| (id as ObjId, world * t)));
-        }
-        for (child, w) in moves {
+            (world, x.inst.attachment_transforms(&ids))
+        };
+        for (id, transform) in moves {
+            let child = id as ObjId;
             if vm.objects.get(child).is_none_or(|o| o.deleted) {
                 continue;
             }
+            let w = world * transform;
             vm.set_field(child, prop!("Location"), Value::Vector(w.w_axis.truncate().to_array()));
             vm.set_field(child, prop!("Rotation"), Value::Rotator(mat3_to_rotator(orthonormal(Mat3::from_mat4(w)))));
         }
