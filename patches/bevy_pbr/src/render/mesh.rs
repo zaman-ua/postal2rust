@@ -3477,7 +3477,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             shader_defs.push("VIEW_PROJECTION_ORTHOGRAPHIC".into());
         }
 
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         shader_defs.push("WEBGL2".into());
 
         #[cfg(feature = "experimental_pbr_pcss")]

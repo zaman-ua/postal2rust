@@ -152,7 +152,7 @@ fn run_deferred_prepass_system(
     // Firefox: WebGL warning: clearBufferu?[fi]v: This attachment is of type FLOAT, but this function is of type UINT.
     // Appears to be unsupported: https://registry.khronos.org/webgl/specs/latest/2.0/#3.7.9
     // For webgl2 we fallback to manually clearing
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     if !is_late {
         if let Some(deferred_texture) = &view_prepass_textures.deferred {
             ctx.command_encoder().clear_texture(
@@ -170,7 +170,7 @@ fn run_deferred_prepass_system(
                 if is_late {
                     deferred_texture.get_attachment()
                 } else {
-                    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+                    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
                     {
                         bevy_render::render_resource::RenderPassColorAttachment {
                             view: &deferred_texture.texture.default_view,
@@ -184,6 +184,7 @@ fn run_deferred_prepass_system(
                     }
                     #[cfg(any(
                         not(feature = "webgl"),
+                        not(any(target_arch = "wasm32", feature = "native-webgl2")),
                         feature = "webgpu"
                     ))]
                     deferred_texture.get_attachment()

@@ -279,11 +279,12 @@ pub struct BloomTexture {
     // First mip is half the screen resolution, successive mips are half the previous
     #[cfg(any(
         not(feature = "webgl"),
+        not(any(target_arch = "wasm32", feature = "native-webgl2")),
         feature = "webgpu"
     ))]
     texture: CachedTexture,
     // WebGL does not support binding specific mip levels for sampling, fallback to separate textures instead
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     texture: Vec<CachedTexture>,
     mip_count: u32,
 }
@@ -291,6 +292,7 @@ pub struct BloomTexture {
 impl BloomTexture {
     #[cfg(any(
         not(feature = "webgl"),
+        not(any(target_arch = "wasm32", feature = "native-webgl2")),
         feature = "webgpu"
     ))]
     fn view(&self, base_mip_level: u32) -> TextureView {
@@ -300,7 +302,7 @@ impl BloomTexture {
             ..Default::default()
         })
     }
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     fn view(&self, base_mip_level: u32) -> TextureView {
         self.texture[base_mip_level as usize]
             .texture
@@ -345,10 +347,11 @@ fn prepare_bloom_textures(
 
             #[cfg(any(
                 not(feature = "webgl"),
+                not(any(target_arch = "wasm32", feature = "native-webgl2")),
                 feature = "webgpu"
             ))]
             let texture = texture_cache.get(&render_device, texture_descriptor);
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             let texture: Vec<CachedTexture> = (0..mip_count)
                 .map(|mip| {
                     texture_cache.get(
@@ -377,10 +380,11 @@ fn prepare_bloom_textures(
 pub struct BloomBindGroups {
     #[cfg(any(
         not(feature = "webgl"),
+        not(any(target_arch = "wasm32", feature = "native-webgl2")),
         feature = "webgpu"
     ))]
     cache_key: (TextureId, BufferId),
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     cache_key: (Vec<TextureId>, BufferId),
     downsampling_bind_groups: Box<[BindGroup]>,
     upsampling_bind_groups: Box<[BindGroup]>,
@@ -401,13 +405,14 @@ fn prepare_bloom_bind_groups(
     for (entity, bloom_texture, bloom_bind_groups) in &views {
         #[cfg(any(
             not(feature = "webgl"),
+            not(any(target_arch = "wasm32", feature = "native-webgl2")),
             feature = "webgpu"
         ))]
         let cache_key = (
             bloom_texture.texture.texture.id(),
             uniforms.buffer().unwrap().id(),
         );
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         let cache_key = (
             bloom_texture
                 .texture

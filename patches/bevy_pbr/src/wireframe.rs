@@ -353,7 +353,7 @@ struct WireframeWideImmediates {
     color: [f32; 4],
     line_width: f32,
     smoothing: f32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _padding: [f32; 2],
 }
 
@@ -388,7 +388,7 @@ impl<P: PhaseItem> RenderCommand<P> for SetWireframe3dWideImmediates {
             } else {
                 1.0
             },
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _padding: [0.0; 2],
         };
         pass.set_immediates(0, bytemuck::bytes_of(&push));

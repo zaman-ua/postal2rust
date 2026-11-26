@@ -13,3 +13,7 @@ p2sound = { path = "../p2sound" }
 p2fx = { path = "../p2fx" }
 bevy = "0.19"
 rayon = "1"
+
+[features]
+# Set by p2game's `arm-board`: the camera's far plane follows the end of the fog.
+arm-board = []

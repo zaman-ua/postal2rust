@@ -234,7 +234,7 @@ impl PipelineCache {
         synchronous_pipeline_compilation: bool,
     ) -> Self {
         let mut global_shader_defs = Vec::new();
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         {
             global_shader_defs.push("NO_ARRAY_TEXTURES_SUPPORT".into());
             global_shader_defs.push("NO_CUBE_ARRAY_TEXTURES_SUPPORT".into());

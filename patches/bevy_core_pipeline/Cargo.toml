@@ -36,6 +36,8 @@ all-features = true
 features = ["bevy_image/zstd_rust"]
 
 [features]
+# postal2rust: Bevy's WebGL2 path outside the browser (p2game's `arm-board`).
+native-webgl2 = []
 tonemapping_luts = [
     "bevy_image/ktx2",
     "bevy_image/zstd",

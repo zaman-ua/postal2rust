@@ -78,11 +78,11 @@ pub fn extract_skybox(
         let uniforms = SkyboxUniforms {
             brightness: skybox.brightness * exposure,
             transform: Transform::from_rotation(skybox.rotation.inverse()).to_matrix(),
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_8b: 0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_12b: 0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_16b: 0,
         };
         values.push((entity, (skybox.clone(), uniforms)));
@@ -96,11 +96,11 @@ pub fn extract_skybox(
 pub struct SkyboxUniforms {
     brightness: f32,
     transform: Mat4,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_8b: u32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_12b: u32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_16b: u32,
 }
 

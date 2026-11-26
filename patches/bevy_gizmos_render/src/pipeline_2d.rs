@@ -113,7 +113,7 @@ impl SpecializedRenderPipeline for LineGizmoPipeline {
         let format = key.mesh_key.target_format();
 
         let shader_defs = vec![
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             "SIXTEEN_BYTE_ALIGNMENT".into(),
         ];
 
@@ -194,7 +194,7 @@ impl SpecializedRenderPipeline for LineJointGizmoPipeline {
         let format = key.mesh_key.target_format();
 
         let shader_defs = vec![
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             "SIXTEEN_BYTE_ALIGNMENT".into(),
         ];
 

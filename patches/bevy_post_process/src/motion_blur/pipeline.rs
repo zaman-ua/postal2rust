@@ -130,7 +130,7 @@ impl SpecializedRenderPipeline for MotionBlurPipeline {
             shader_defs.push(ShaderDefVal::from("MULTISAMPLED"));
         }
 
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         {
             shader_defs.push("SIXTEEN_BYTE_ALIGNMENT".into());
         }

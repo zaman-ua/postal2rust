@@ -35,6 +35,8 @@ rustdoc-args = [
 all-features = true
 
 [features]
+# postal2rust: Bevy's WebGL2 path outside the browser (p2game's `arm-board`).
+native-webgl2 = []
 webgl = []
 webgpu = []
 

@@ -128,7 +128,7 @@ impl ExtractComponent for MotionBlur {
         Some(MotionBlurUniform {
             shutter_angle: item.shutter_angle,
             samples: item.samples,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding: Default::default(),
         })
     }
@@ -139,7 +139,7 @@ impl ExtractComponent for MotionBlur {
 pub struct MotionBlurUniform {
     shutter_angle: f32,
     samples: u32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     // WebGL2 structs must be 16 byte aligned.
     _webgl2_padding: bevy_math::Vec2,
 }

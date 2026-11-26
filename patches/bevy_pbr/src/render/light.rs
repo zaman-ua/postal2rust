@@ -212,19 +212,21 @@ pub struct GpuLights {
 
 // NOTE: When running bevy on Adreno GPU chipsets in WebGL, any value above 1 will result in a crash
 // when loading the wgsl "pbr_functions.wgsl" in the function apply_fog.
-#[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+#[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
 pub const MAX_DIRECTIONAL_LIGHTS: usize = 1;
 #[cfg(any(
     not(feature = "webgl"),
+    not(any(target_arch = "wasm32", feature = "native-webgl2")),
     feature = "webgpu"
 ))]
 pub const MAX_DIRECTIONAL_LIGHTS: usize = 10;
 #[cfg(any(
     not(feature = "webgl"),
+    not(any(target_arch = "wasm32", feature = "native-webgl2")),
     feature = "webgpu"
 ))]
 pub const MAX_CASCADES_PER_LIGHT: usize = 4;
-#[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+#[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
 pub const MAX_CASCADES_PER_LIGHT: usize = 1;
 
 pub const MAX_RECT_LIGHTS: usize = 8;
@@ -1112,17 +1114,19 @@ pub fn prepare_lights(
 
     #[cfg(any(
         not(feature = "webgl"),
+        not(any(target_arch = "wasm32", feature = "native-webgl2")),
         feature = "webgpu"
     ))]
     let max_texture_array_layers = render_device.limits().max_texture_array_layers as usize;
     #[cfg(any(
         not(feature = "webgl"),
+        not(any(target_arch = "wasm32", feature = "native-webgl2")),
         feature = "webgpu"
     ))]
     let max_texture_cubes = max_texture_array_layers / 6;
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     let max_texture_array_layers = 1;
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     let max_texture_cubes = 1;
 
     if !*max_directional_lights_warning_emitted
@@ -1421,13 +1425,14 @@ pub fn prepare_lights(
                     not(target_abi = "sim"),
                     any(
                         not(feature = "webgl"),
+                        not(any(target_arch = "wasm32", feature = "native-webgl2")),
                         feature = "webgpu"
                     )
                 ))]
                 dimension: Some(TextureViewDimension::CubeArray),
                 #[cfg(any(
                     target_abi = "sim",
-                    all(feature = "webgl", not(feature = "webgpu"))
+                    all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu"))
                 ))]
                 dimension: Some(TextureViewDimension::Cube),
                 usage: None,
@@ -1468,10 +1473,11 @@ pub fn prepare_lights(
                 format: None,
                 #[cfg(any(
                     not(feature = "webgl"),
+                    not(any(target_arch = "wasm32", feature = "native-webgl2")),
                     feature = "webgpu"
                 ))]
                 dimension: Some(TextureViewDimension::D2Array),
-                #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+                #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
                 dimension: Some(TextureViewDimension::D2),
                 usage: None,
                 aspect: TextureAspect::DepthOnly,

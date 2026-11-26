@@ -4194,6 +4194,11 @@ name = "p2game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_core_pipeline",
+ "bevy_gizmos_render",
+ "bevy_pbr",
+ "bevy_post_process",
+ "bevy_render",
  "foldhash 0.2.0",
  "glam",
  "glow",

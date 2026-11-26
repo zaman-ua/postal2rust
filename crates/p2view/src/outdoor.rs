@@ -35,8 +35,10 @@ impl Plugin for OutdoorPlugin {
         app.add_plugins(MaterialPlugin::<SplatMaterial>::default()).add_systems(Update, (animate_lights, ue2_display, crate::uvanim::animate_uvs, crate::uvanim::animate_textures))
             .add_systems(PostUpdate, sync_sky_camera.before(bevy::camera::CameraUpdateSystems).before(bevy::transform::TransformSystems::Propagate))
             .add_systems(PostUpdate, fog_far_plane.after(bevy::camera::CameraUpdateSystems))
-            .add_systems(PostUpdate, fog_cull_far.before(bevy::camera::CameraUpdateSystems))
             .add_systems(PostUpdate, crate::zones::zone_cull.after(bevy::transform::TransformSystems::Propagate).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility));
+        if cfg!(feature = "arm-board") {
+            app.add_systems(PostUpdate, fog_cull_far.before(bevy::camera::CameraUpdateSystems));
+        }
     }
 }
 
@@ -54,7 +56,8 @@ fn far_clip_matrix(p: &PerspectiveProjection, far: f32) -> Mat4 {
 /// Frustum culling uses `PerspectiveProjection::far`, which stayed at the spawn value
 /// (1500 m) while `fog_far_plane` only clipped pixels: everything behind the fog was still culled
 /// in, batched and drawn (2381 of 2663 meshes "visible" on suburbs-3). Set `far` to the fog end
-/// so Bevy drops those meshes on the CPU. `P2_NO_FOG_CULL=1` disables.
+/// so Bevy drops those meshes on the CPU. Part of the `arm-board` feature; `P2_NO_FOG_CULL=1`
+/// disables it there.
 #[allow(clippy::type_complexity)]
 fn fog_cull_far(mut cams: Query<(&DistanceFog, &mut Projection), (With<Camera3d>, Without<SkyCamera>)>) {
     if std::env::var_os("P2_NO_FOG_CULL").is_some() {

@@ -62,7 +62,7 @@ use crate::{
     CLUSTERED_FORWARD_STORAGE_BUFFER_COUNT,
 };
 
-#[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+#[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
 use bevy_render::render_resource::binding_types::texture_cube;
 
 #[cfg(debug_assertions)]
@@ -265,13 +265,14 @@ fn layout_entries(
                     not(target_abi = "sim"),
                     any(
                         not(feature = "webgl"),
+                        not(any(target_arch = "wasm32", feature = "native-webgl2")),
                         feature = "webgpu"
                     )
                 ))]
                 texture_cube_array(TextureSampleType::Depth),
                 #[cfg(any(
                     target_abi = "sim",
-                    all(feature = "webgl", not(feature = "webgpu"))
+                    all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu"))
                 ))]
                 texture_cube(TextureSampleType::Depth),
             ),
@@ -285,10 +286,11 @@ fn layout_entries(
                 5,
                 #[cfg(any(
                     not(feature = "webgl"),
+                    not(any(target_arch = "wasm32", feature = "native-webgl2")),
                     feature = "webgpu"
                 ))]
                 texture_2d_array(TextureSampleType::Depth),
-                #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+                #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
                 texture_2d(TextureSampleType::Depth),
             ),
             // Directional Shadow Texture Array Comparison Sampler

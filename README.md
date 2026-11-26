@@ -13,7 +13,8 @@ Debian trixie, Mesa/Panfrost, OpenGL ES 3.1. The author's README follows below, 
 1. **`P2GAME_GLES=1`**: the game logic stays on Bevy, but Bevy's renderer is not created; a thin
    OpenGL ES 3.0 renderer ([`crates/p2gles`](crates/p2gles/README.md)) draws the frame.
 2. **Cheaper game logic**, for both renderers.
-3. **Board support** for the stock Bevy renderer on Panfrost, and lower memory use.
+3. **Board support** for the stock Bevy renderer on Panfrost (an opt-in build feature), and lower memory
+   use.
 
 ## Why a second renderer
 
@@ -122,14 +123,36 @@ measurable difference to the whole frame.
 - `p2game --smoke --windowed` (menu, New Game, intro, first day, walk, fire, level portal) passes on a
   virtual X display, and screenshots were compared between builds.
 
-### Stock Bevy renderer on the board, and memory
+### Stock Bevy renderer on the board (`arm-board` build option)
 
-- wgpu's GLES backend with EGL on X11 and Bevy's WebGL2 path on native (`patches/`, applied through
-  `[patch.crates-io]`). Bevy does not accept Panfrost's Vulkan driver.
+Everything that changes the author's Bevy renderer is behind the cargo feature `arm-board` of
+`p2game`, **off by default**:
+
+- Bevy's WebGL2 path outside the browser. Bevy turns its `webgl` code on only for `wasm32`; the copies
+  in `patches/` add a `native-webgl2` feature that does the same on native. Without it they build
+  exactly as published. The mode is a compromise for weak GPUs (for example 4 KB uniform buffers and a
+  single directional light), which is why it must not be on elsewhere.
+- wgpu's OpenGL ES backend. Bevy does not accept Panfrost's Vulkan driver. On the board also set
+  `WGPU_EGL_X11=1`, so wgpu opens the X11 display itself.
+- MSAA off on all cameras (`P2_MSAA=1` restores it) and the camera's far plane at the end of the fog
+  (`P2_NO_FOG_CULL=1`).
+
+```
+cargo build --release -p p2game --features arm-board
+```
+
+Without the feature, `bevy*`, `wgpu*` and `naga*` resolve to the same crates, versions and features as
+upstream. `patches/` is still applied (cargo patches cannot depend on a feature). Besides the gated
+code it holds three small fixes that decide at run time: opening the X11 display (only with
+`WGPU_EGL_X11`), uniform buffers on GPUs without vertex storage buffers, and not crashing on level
+change when Bevy's renderer is absent, **which `P2GAME_GLES=1` needs**.
+
+`P2GAME_GLES=1` itself does not need `arm-board`.
+
+### Memory and fixes (always on)
+
 - Game packages are memory-mapped instead of read into the heap: the process had grown to about 3 GB
   and was swapping (`P2_PKG_NO_MMAP=1` restores reading).
-- MSAA is off on all cameras (`P2_MSAA=1` restores it) and the camera's far plane follows the fog end
-  (`P2_NO_FOG_CULL=1`). **These two change the Bevy renderer on every platform.**
 - Frame time reports use wall-clock time (frames over 250 ms were reported as 250 ms).
 - UTF-16BE `.int` files (some Steam localisations); `P2_TEX_SKIP_MIPS=N` for less texture memory.
 
@@ -148,9 +171,10 @@ You need your own copy of POSTAL 2 (Steam, `POSTAL2Complete`).
 
 **Docker** (cross-builds for ARM and builds for x86):
 ```
-tools/docker/build.sh arm p2game    # -> target-docker/aarch64-unknown-linux-gnu/release/p2game
-tools/docker/build.sh x86 p2game    # -> target-docker/release/p2game
+tools/docker/build.sh arm p2game    # with arm-board -> target-docker/aarch64-unknown-linux-gnu/release/p2game
+tools/docker/build.sh x86 p2game    # without it     -> target-docker/release/p2game
 ```
+`P2_FEATURES` overrides the feature list for either target.
 The `p2-builder` image is built from `tools/docker/Dockerfile` on first use. `P2_PROFILE=dist` builds
 with fat LTO (about 3-7% faster logic on x86; slow to build). x86 binaries from the image need glibc
 2.39 or newer.

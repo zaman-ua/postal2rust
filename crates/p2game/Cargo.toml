@@ -23,7 +23,7 @@ p2view = { path = "../p2view", optional = true }
 # HUD / menus / input (ram's ui.rs).
 p2canvas = { path = "../p2canvas", optional = true }
 p2input = { path = "../p2input", features = ["bevy"], optional = true }
-bevy = { version = "0.19", optional = true, features = ["webgl2"] }
+bevy = { version = "0.19", optional = true }
 # Same winit as bevy_winit: window resize requests from the video settings (settings.rs).
 winit = { version = "0.30", default-features = false, optional = true }
 # Particles, fluids, projector decals (rooster's fx_glue.rs).
@@ -31,6 +31,13 @@ p2fx = { path = "../p2fx", optional = true }
 # Global allocator of the p2game binary: the interpreter's many short-lived mixed-size
 # allocations degrade the Windows system heap (see examples/tick_bench.rs).
 mimalloc = { version = "0.1", default-features = false }
+# Only named so that `arm-board` can switch their patched WebGL2 path on (`patches/`).
+# Renamed: under their own names Bevy's derive macros would resolve paths through them.
+board_bevy_core_pipeline = { package = "bevy_core_pipeline", version = "0.19", default-features = false, optional = true }
+board_bevy_gizmos_render = { package = "bevy_gizmos_render", version = "0.19", default-features = false, optional = true }
+board_bevy_pbr = { package = "bevy_pbr", version = "0.19", default-features = false, optional = true }
+board_bevy_post_process = { package = "bevy_post_process", version = "0.19", default-features = false, optional = true }
+board_bevy_render = { package = "bevy_render", version = "0.19", default-features = false, optional = true }
 # p2gles renderer embedded in the game (P2GAME_GLES=1, src/gles/)
 p2gles = { path = "../p2gles", optional = true }
 foldhash = "0.2"
@@ -38,7 +45,7 @@ glutin = { version = "0.32", optional = true }
 glow = { version = "0.17", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 # ARM boards (Mali, Panfrost): wgpu's OpenGL ES backend, which Bevy does not enable natively.
-wgpu = { version = "29", default-features = false, features = ["gles"] }
+wgpu = { version = "29", default-features = false, features = ["gles"], optional = true }
 
 [features]
 default = ["window"]
@@ -47,5 +54,10 @@ window = ["dep:p2view", "dep:bevy", "dep:p2fx", "p2sound/device", "dep:p2canvas"
 # Chrome-trace spans for every Bevy system and render phase (writes trace-*.json in the cwd).
 # Build with `--features trace` into a separate target dir; open the file in ui.perfetto.dev.
 trace = ["window", "bevy/trace_chrome"]
+# Weak ARM boards (Mali-G31 on Panfrost). Changes the stock Bevy renderer, so it is off by default:
+# its WebGL2 path outside the browser (`native-webgl2` in the patched crates in `patches/`; without
+# it they build exactly as published), wgpu's OpenGL ES backend,
+# no MSAA and a far plane at the end of the fog. `P2GAME_GLES=1` does not need it.
+arm-board = ["window", "dep:wgpu", "p2view/arm-board", "dep:board_bevy_core_pipeline", "board_bevy_core_pipeline/native-webgl2", "dep:board_bevy_gizmos_render", "board_bevy_gizmos_render/native-webgl2", "dep:board_bevy_pbr", "board_bevy_pbr/native-webgl2", "dep:board_bevy_post_process", "board_bevy_post_process/native-webgl2", "dep:board_bevy_render", "board_bevy_render/native-webgl2"]
 
 [dev-dependencies]

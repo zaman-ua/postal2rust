@@ -17,6 +17,7 @@ use wgpu::{BindingResource, Limits};
 // dynamic offset.
 #[cfg(any(
     not(feature = "webgl"),
+    not(any(target_arch = "wasm32", feature = "native-webgl2")),
     feature = "webgpu"
 ))]
 const MAX_REASONABLE_UNIFORM_BUFFER_BINDING_SIZE: u64 = 1 << 20;
@@ -26,7 +27,7 @@ const MAX_REASONABLE_UNIFORM_BUFFER_BINDING_SIZE: u64 = 1 << 20;
 // This is due to older shader compilers/GPUs that don't support dynamically
 // indexing uniform buffers, and instead emulate it with large switch statements
 // over buffer indices that take a long time to compile.
-#[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+#[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
 const MAX_REASONABLE_UNIFORM_BUFFER_BINDING_SIZE: u64 = 1 << 12;
 
 /// Similar to [`DynamicUniformBuffer`], except every N elements (depending on size)

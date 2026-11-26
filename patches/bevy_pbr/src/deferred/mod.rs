@@ -39,11 +39,11 @@ pub const DEFAULT_PBR_DEFERRED_LIGHTING_PASS_ID: u8 = 1;
 pub struct PbrDeferredLightingDepthId {
     depth_id: u32,
 
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_0: f32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_1: f32,
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding_2: f32,
 }
 
@@ -52,11 +52,11 @@ impl PbrDeferredLightingDepthId {
         PbrDeferredLightingDepthId {
             depth_id: value as u32,
 
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_0: 0.0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_1: 0.0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_2: 0.0,
         }
     }
@@ -75,11 +75,11 @@ impl Default for PbrDeferredLightingDepthId {
         PbrDeferredLightingDepthId {
             depth_id: DEFAULT_PBR_DEFERRED_LIGHTING_PASS_ID as u32,
 
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_0: 0.0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_1: 0.0,
-            #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+            #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
             _webgl2_padding_2: 0.0,
         }
     }
@@ -202,7 +202,7 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
         // Let the shader code know that it's running in a deferred pipeline.
         shader_defs.push("DEFERRED_LIGHTING_PIPELINE".into());
 
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         shader_defs.push("WEBGL2".into());
 
         if key.contains(MeshPipelineKey::TONEMAP_IN_SHADER) {
@@ -323,7 +323,7 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
         #[cfg(feature = "experimental_pbr_pcss")]
         shader_defs.push("PCSS_SAMPLERS_AVAILABLE".into());
 
-        #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+        #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
         shader_defs.push("SIXTEEN_BYTE_ALIGNMENT".into());
 
         if cfg!(feature = "bluenoise_texture") {

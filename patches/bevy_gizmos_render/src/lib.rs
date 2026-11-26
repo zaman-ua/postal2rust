@@ -200,7 +200,7 @@ fn extract_gizmo_data(
                 joints_resolution,
                 gap_scale,
                 line_scale,
-                #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+                #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
                 _webgl2_padding: Default::default(),
             },
             #[cfg(any(feature = "bevy_pbr", feature = "bevy_sprite_render"))]
@@ -230,7 +230,7 @@ struct LineGizmoUniform {
     gap_scale: f32,
     line_scale: f32,
     /// WebGL2 structs must be 16 byte aligned.
-    #[cfg(all(feature = "webgl", not(feature = "webgpu")))]
+    #[cfg(all(feature = "webgl", any(target_arch = "wasm32", feature = "native-webgl2"), not(feature = "webgpu")))]
     _webgl2_padding: bevy_math::Vec3,
 }
 

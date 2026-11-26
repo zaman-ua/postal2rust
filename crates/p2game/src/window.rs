@@ -258,6 +258,9 @@ pub fn run(cfg: BootConfig, args: Args) {
         app.add_plugins(crate::gles::GlesPlugin);
     }
     app.add_plugins(plugins);
+    if cfg!(feature = "arm-board") {
+        app.add_systems(PostUpdate, msaa_off);
+    }
     crate::settings::install(&mut sim);
     app.add_plugins(crate::settings::SettingsPlugin);
     app.add_plugins(crate::window_memory::WindowMemoryPlugin);
@@ -289,7 +292,6 @@ pub fn run(cfg: BootConfig, args: Args) {
         .init_resource::<LevelSnapshot>()
         .insert_non_send(sim)
         .add_systems(Startup, cluster_capacity)
-        .add_systems(PostUpdate, msaa_off)
         ;
     // GPU upload budget per frame (Bevy's render asset limiter); unset = no limit.
     if let Some(mb) = std::env::var("P2GAME_UPLOAD_MB").ok().and_then(|s| s.parse::<f64>().ok()).filter(|&m| m > 0.0) {
@@ -414,7 +416,7 @@ pub(crate) fn process_memory_mb() -> Option<(f64, f64, f64)> {
 /// at runtime ("Resizing the view clustering Z slice list", lighting glitches for a few frames).
 /// Start them large enough for POSTAL 2 maps.
 /// MSAA off on every camera, for weak GPUs (Mali-G31) (Bevy's default is 4x per camera).
-/// `P2_MSAA=1` keeps Bevy's default.
+/// Part of the `arm-board` feature. `P2_MSAA=1` keeps Bevy's default.
 fn msaa_off(mut commands: Commands, cams: Query<Entity, Added<Camera>>) {
     if std::env::var_os("P2_MSAA").is_some() {
         return;
