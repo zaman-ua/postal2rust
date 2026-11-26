@@ -835,8 +835,8 @@ impl crate::Instance for Instance {
                 .map_err(instance_err("failed to get XCB display"))?;
                 (display, WindowKind::X11)
             }
-            // postal2rust/ARM: Bevy не передаёт дисплей X11 (display: None), и wgpu уходил в surfaceless —
-            // окну некуда выводить. При WGPU_EGL_X11=1 открываем X11-дисплей сами (Mesa: XOpenDisplay($DISPLAY)).
+            // postal2rust/ARM: Bevy passes no X11 display (display: None), so wgpu went surfaceless and
+            // had nowhere to present. With WGPU_EGL_X11=1 open the display here (Mesa: XOpenDisplay($DISPLAY)).
             (None, Some(egl))
                 if std::env::var_os("WGPU_EGL_X11").is_some()
                     && client_ext_str.contains("EGL_EXT_platform_x11") =>

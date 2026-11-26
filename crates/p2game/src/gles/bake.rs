@@ -48,6 +48,7 @@ pub(crate) fn queue_bake(commands: &mut Commands, level: LevelBake) {
 /// Runs right after `load_scene` in the Update chain, before anything else spawns meshes. Candidates:
 /// BSP, terrain layers and static mesh instances on the default layer. Not candidates: movers, the
 /// sky zone (own layer) and terrain decorations (distance-ranged entities that are no map actor).
+#[allow(clippy::type_complexity)]
 pub(crate) fn classify_baked(mut commands: Commands, pending: Option<NonSendMut<Option<PendingBake>>>, meshes: Query<(Entity, Option<&RenderLayers>, Has<VisibilityRange>), With<Mesh3d>>) {
     // A bake is only ever queued with P2GAME_GLES=1.
     let Some(mut pending) = pending else { return };

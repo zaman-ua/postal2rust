@@ -144,10 +144,10 @@ pub(super) fn draw_frame(
         capture,
     })));
     // Inline, the frame is already drawn.
-    if !gles.link.threaded() {
-        if let Some(done) = gles.link.wait() {
-            gles.finished(done, &mut commands);
-        }
+    if !gles.link.threaded()
+        && let Some(done) = gles.link.wait()
+    {
+        gles.finished(done, &mut commands);
     }
     gles.stats.record(collected, waited, gles.link.threaded());
     if gles.stats.frames % 300 == 0 {

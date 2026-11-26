@@ -51,10 +51,11 @@ fn far_clip_matrix(p: &PerspectiveProjection, far: f32) -> Mat4 {
     Mat4::from_cols(Vec4::new(f / p.aspect_ratio, 0.0, 0.0, 0.0), Vec4::new(0.0, f, 0.0, 0.0), Vec4::new(0.0, 0.0, a, -1.0), Vec4::new(0.0, 0.0, b, 0.0))
 }
 
-/// x96plus: frustum culling uses `PerspectiveProjection::far`, which stayed at the spawn value
+/// Frustum culling uses `PerspectiveProjection::far`, which stayed at the spawn value
 /// (1500 m) while `fog_far_plane` only clipped pixels: everything behind the fog was still culled
 /// in, batched and drawn (2381 of 2663 meshes "visible" on suburbs-3). Set `far` to the fog end
 /// so Bevy drops those meshes on the CPU. `P2_NO_FOG_CULL=1` disables.
+#[allow(clippy::type_complexity)]
 fn fog_cull_far(mut cams: Query<(&DistanceFog, &mut Projection), (With<Camera3d>, Without<SkyCamera>)>) {
     if std::env::var_os("P2_NO_FOG_CULL").is_some() {
         return;
@@ -64,10 +65,11 @@ fn fog_cull_far(mut cams: Query<(&DistanceFog, &mut Projection), (With<Camera3d>
         let Projection::Perspective(p) = proj.as_ref() else { continue };
         // A little past the fog end: geometry there is fully fog-coloured anyway.
         let far = *end * 1.05;
-        if far > p.near * 2.0 && (p.far - far).abs() > 0.5 {
-            if let Projection::Perspective(p) = proj.as_mut() {
-                p.far = far;
-            }
+        if far > p.near * 2.0
+            && (p.far - far).abs() > 0.5
+            && let Projection::Perspective(p) = proj.as_mut()
+        {
+            p.far = far;
         }
     }
 }

@@ -43,6 +43,7 @@ pub(super) struct Pass {
 }
 
 #[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
 pub(super) struct Cameras<'w, 's> {
     cameras: Query<'w, 's, (&'static GlobalTransform, &'static Projection, &'static Camera, Option<&'static RenderLayers>, Option<&'static DistanceFog>), With<Camera3d>>,
     clear: Option<Res<'w, ClearColor>>,
@@ -121,6 +122,7 @@ impl Cameras<'_, '_> {
 }
 
 #[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
 pub(super) struct SceneMeshes<'w, 's> {
     /// Mesh entities outside the baked world.
     entities: Query<

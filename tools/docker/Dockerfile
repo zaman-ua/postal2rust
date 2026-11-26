@@ -1,4 +1,4 @@
-# Сборщик postal2rust / p2gles: кросс-сборка под aarch64 (Debian trixie, приставка) и сборка под x86_64.
+# postal2rust / p2gles builder: aarch64 cross-compilation and x86_64 (Debian trixie).
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture arm64 && apt-get update -qq && apt-get install -y -qq --no-install-recommends \

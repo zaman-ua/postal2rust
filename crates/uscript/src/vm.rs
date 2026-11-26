@@ -2462,8 +2462,8 @@ fn parse_ini(b: &[u8]) -> HashMap<(String, String), String> {
         let u: Vec<u16> = b[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         String::from_utf16_lossy(&u)
     } else if b.starts_with(&[0xFE, 0xFF]) {
-        // Русская (и др.) локализация Steam-версии: UTF-16BE с BOM.
-        let u: Vec<u16> = b[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        // Some Steam localisations (Russian among them) ship UTF-16BE with a BOM.
+        let u: Vec<u16> = b[2..].as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
         String::from_utf16_lossy(&u)
     } else {
         match std::str::from_utf8(b) {

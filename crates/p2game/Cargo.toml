@@ -31,13 +31,13 @@ p2fx = { path = "../p2fx", optional = true }
 # Global allocator of the p2game binary: the interpreter's many short-lived mixed-size
 # allocations degrade the Windows system heap (see examples/tick_bench.rs).
 mimalloc = { version = "0.1", default-features = false }
-# ARM SBC (Mali, panfrost): включить бэкенд OpenGL ES в wgpu (Bevy на нативе его не включает)
-# p2gles renderer embedded in the game (P2GAME_GLES=1, gles.rs)
+# p2gles renderer embedded in the game (P2GAME_GLES=1, src/gles/)
 p2gles = { path = "../p2gles", optional = true }
 foldhash = "0.2"
 glutin = { version = "0.32", optional = true }
 glow = { version = "0.17", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+# ARM boards (Mali, Panfrost): wgpu's OpenGL ES backend, which Bevy does not enable natively.
 wgpu = { version = "29", default-features = false, features = ["gles"] }
 
 [features]

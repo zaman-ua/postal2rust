@@ -1697,7 +1697,8 @@ fn load_texture_opacity(o: &Obj, op: &Obj) -> TexData {
     t
 }
 
-/// ARM/мало памяти: `P2_TEX_SKIP_MIPS=N` — пропустить N верхних mip-уровней (текстуры от 64 px), память /4 за уровень.
+/// For boards short of memory: `P2_TEX_SKIP_MIPS=N` drops the N largest mip levels (textures of
+/// 64 px and up); each level dropped takes a quarter of the memory.
 fn tex_skip_mips() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| std::env::var("P2_TEX_SKIP_MIPS").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0))

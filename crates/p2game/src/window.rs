@@ -413,7 +413,7 @@ pub(crate) fn process_memory_mb() -> Option<(f64, f64, f64)> {
 /// The level's many point lights overflow Bevy's default GPU clustering buffers, which then grow
 /// at runtime ("Resizing the view clustering Z slice list", lighting glitches for a few frames).
 /// Start them large enough for POSTAL 2 maps.
-/// x96plus (Mali-G31): MSAA off on every camera (Bevy's default is 4x per camera).
+/// MSAA off on every camera, for weak GPUs (Mali-G31) (Bevy's default is 4x per camera).
 /// `P2_MSAA=1` keeps Bevy's default.
 fn msaa_off(mut commands: Commands, cams: Query<Entity, Added<Camera>>) {
     if std::env::var_os("P2_MSAA").is_some() {
@@ -827,6 +827,7 @@ fn perf_hide(mut q: Query<(&mut Visibility, Has<bevy::mesh::skinning::SkinnedMes
 }
 
 /// `P2GAME_MESH_CENSUS=1`: every 5 s, counts the mesh entities visible to some camera, by kind.
+#[allow(clippy::type_complexity)]
 fn mesh_census(
     time: Res<Time>,
     mut last: Local<f32>,
@@ -1007,6 +1008,7 @@ fn frame_npc(args: Res<WinArgs>, sim: NonSend<Sim>, mut done: Local<bool>, mut c
     println!("camera framing NPC #{n} at ({:.0},{:.0},{:.0})", loc[0], loc[1], loc[2]);
 }
 
+#[allow(clippy::type_complexity)]
 fn pose_rigs(
     sim: NonSend<Sim>,
     rigs: Query<&crate::rigs::VmRig>,

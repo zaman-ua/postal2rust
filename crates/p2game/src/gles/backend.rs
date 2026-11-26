@@ -268,10 +268,10 @@ impl Link {
                 let _ = ready_tx.send(Ok(()));
                 // Ends when the main thread drops its sender (or stops listening).
                 for cmd in queue {
-                    if let Some(answer) = backend.execute(cmd) {
-                        if done_tx.send(answer).is_err() {
-                            break;
-                        }
+                    if let Some(answer) = backend.execute(cmd)
+                        && done_tx.send(answer).is_err()
+                    {
+                        break;
                     }
                 }
             })

@@ -23,7 +23,7 @@ pub struct ParticleDraw {
 impl Dynamic {
     /// Particle and decal batches (world-space meshes, `aW.x` = sub-image blend), after the rest of a
     /// camera's geometry. Depth-tested against it, never culled.
-    pub fn render_particles(&mut self, gl: &glow::Context, vp: Mat4, cam: Vec3, env: &Env, draws: &mut Vec<ParticleDraw>) {
+    pub fn render_particles(&mut self, gl: &glow::Context, vp: Mat4, cam: Vec3, env: &Env, draws: &mut [ParticleDraw]) {
         if draws.is_empty() {
             return;
         }

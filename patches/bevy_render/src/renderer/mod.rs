@@ -327,8 +327,8 @@ pub async fn initialize_renderer(
         limits = limits.or_worse_values_from(constrained_limits);
     }
 
-    // postal2rust/ARM (Mali-G31 panfrost, GLES 3.1): нет storage-буферов в вершинном шейдере.
-    // Обнуляем лимит, чтобы Bevy выбрал путь с uniform-буферами (как для WebGL2).
+    // postal2rust/ARM (Mali-G31 Panfrost, GLES 3.1): no storage buffers in vertex shaders. Report a
+    // limit of zero so Bevy takes its uniform-buffer path (as for WebGL2).
     if !adapter
         .get_downlevel_capabilities()
         .flags

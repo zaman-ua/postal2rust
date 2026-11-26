@@ -7,7 +7,6 @@ use glow::HasContext;
 use glutin::config::{Api, ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, Version};
 use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::prelude::*;
 use glutin_winit::{DisplayBuilder, GlWindow};
 use p2gles::dynamic::*;
 use raw_window_handle::HasWindowHandle;

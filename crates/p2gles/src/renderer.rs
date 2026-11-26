@@ -189,10 +189,10 @@ pub(crate) unsafe fn upload_bc(gl: &glow::Context, w: u32, h: u32, fmt: PixelFor
         }
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, n - 1);
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, if n > 1 { glow::LINEAR_MIPMAP_LINEAR } else { glow::LINEAR } as i32);
-        if n > 1 {
-            if let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso) {
-                gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a);
-            }
+        if n > 1
+            && let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso)
+        {
+            gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a);
         }
         BC_UPLOADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(t)
@@ -238,10 +238,10 @@ pub(crate) unsafe fn upload_tex(gl: &glow::Context, w: u32, h: u32, mips: &[&[u8
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
         }
         // Anisotropic filtering costs up to 8 texture fetches per pixel: opt-in (P2GLES_ANISO=N).
-        if n > 1 || gen_mips {
-            if let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso) {
-                gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a); // TEXTURE_MAX_ANISOTROPY_EXT
-            }
+        if (n > 1 || gen_mips)
+            && let Some(a) = std::env::var("P2GLES_ANISO").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| aniso)
+        {
+            gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, a); // TEXTURE_MAX_ANISOTROPY_EXT
         }
         t
     }
@@ -281,7 +281,7 @@ impl Renderer {
                 .map(|l| {
                     let ok = l.width <= 16384 && l.height <= 16384 && l.rgba.len() as u64 == l.width as u64 * l.height as u64 * 4;
                     let n = (l.rgba.len() / 4).max(1) as u64;
-                    let sum: u64 = l.rgba.chunks_exact(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum();
+                    let sum: u64 = l.rgba.as_chunks::<4>().0.iter().map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum();
                     ok && sum / (3 * n) >= 8
                 })
                 .collect();
@@ -633,7 +633,7 @@ impl Renderer {
 fn bake_split(b: &mut Baker, key: Key, m: &MeshData, vert: impl Fn(usize) -> V) {
     let mut remap: HashMap<(i32, i32), HashMap<u32, u32>> = HashMap::new();
     let mut pieces = Vec::new();
-    for tri in m.indices.chunks_exact(3) {
+    for tri in m.indices.as_chunks::<3>().0 {
         let p = |i: u32| Vec3::from(m.positions[i as usize]);
         if !is_large([p(tri[0]), p(tri[1]), p(tri[2])]) {
             let c = (p(tri[0]) + p(tri[1]) + p(tri[2])) / 3.0;
@@ -676,7 +676,7 @@ fn midpoint(a: V, b: V) -> V {
         pos: std::array::from_fn(|i| half(a.pos[i], b.pos[i])),
         uv: std::array::from_fn(|i| half(a.uv[i], b.uv[i])),
         uv2: std::array::from_fn(|i| half(a.uv2[i], b.uv2[i])),
-        col: std::array::from_fn(|i| ((a.col[i] as u16 + b.col[i] as u16 + 1) / 2) as u8),
+        col: std::array::from_fn(|i| (a.col[i] as u16 + b.col[i] as u16).div_ceil(2) as u8),
     }
 }
 

@@ -165,11 +165,11 @@ impl ApplicationHandler for App {
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: winit::event::DeviceId, ev: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = ev {
-            if self.args.bench.is_none() && self.args.shot.is_none() {
-                self.yaw += delta.0 as f32 * 0.0025;
-                self.pitch = (self.pitch - delta.1 as f32 * 0.0025).clamp(-1.55, 1.55);
-            }
+        if let DeviceEvent::MouseMotion { delta } = ev
+            && self.args.bench.is_none() && self.args.shot.is_none()
+        {
+            self.yaw += delta.0 as f32 * 0.0025;
+            self.pitch = (self.pitch - delta.1 as f32 * 0.0025).clamp(-1.55, 1.55);
         }
     }
 
@@ -224,23 +224,23 @@ impl App {
         g.r.render(vp, pos, (w, h));
         self.frames += 1;
         // Screenshot: render a few frames then read back.
-        if let Some(path) = self.args.shot.clone() {
-            if self.frames >= 4 && !self.shot_done {
-                let px = g.r.read_pixels(w, h);
-                let mut flipped = Vec::with_capacity(px.len());
-                for row in (0..h as usize).rev() {
-                    flipped.extend_from_slice(&px[row * w as usize * 4..(row + 1) * w as usize * 4]);
-                }
-                let f = std::fs::File::create(&path).expect("create png");
-                let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
-                enc.set_color(png::ColorType::Rgba);
-                enc.set_depth(png::BitDepth::Eight);
-                enc.write_header().unwrap().write_image_data(&flipped).unwrap();
-                println!("screenshot -> {} ({} draws, {} tris)", path.display(), g.r.stats.draws, g.r.stats.tris);
-                self.shot_done = true;
-                el.exit();
-                return;
+        if let Some(path) = self.args.shot.clone()
+            && self.frames >= 4 && !self.shot_done
+        {
+            let px = g.r.read_pixels(w, h);
+            let mut flipped = Vec::with_capacity(px.len());
+            for row in (0..h as usize).rev() {
+                flipped.extend_from_slice(&px[row * w as usize * 4..(row + 1) * w as usize * 4]);
             }
+            let f = std::fs::File::create(&path).expect("create png");
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&flipped).unwrap();
+            println!("screenshot -> {} ({} draws, {} tris)", path.display(), g.r.stats.draws, g.r.stats.tris);
+            self.shot_done = true;
+            el.exit();
+            return;
         }
         g.surface.swap_buffers(&g.ctx).expect("swap");
         // Bench accounting (wall clock, including swap).

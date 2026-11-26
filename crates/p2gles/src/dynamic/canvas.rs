@@ -100,9 +100,9 @@ impl Dynamic {
                         gl.blend_func(s, t);
                     }
                 }
-                for i in 0..3 {
-                    gl.active_texture(glow::TEXTURE0 + i as u32);
-                    gl.bind_texture(glow::TEXTURE_2D, Some(d.tex[i].and_then(|t| self.textures.get(&t).copied()).unwrap_or(self.white)));
+                for (unit, tex) in d.tex.iter().enumerate() {
+                    gl.active_texture(glow::TEXTURE0 + unit as u32);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(tex.and_then(|t| self.textures.get(&t).copied()).unwrap_or(self.white)));
                 }
                 gl.uniform_4_f32_slice(c.loc["uTint"].as_ref(), &d.tint);
                 let flat = |a: &[[f32; 4]; 3]| -> Vec<f32> { a.iter().flatten().copied().collect() };

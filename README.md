@@ -1,121 +1,164 @@
-# Форк zaman-ua: p2gles и работа на слабом ARM (Mali-G31)
+# zaman-ua fork: p2gles and performance work for weak ARM boards (Mali-G31)
 
-Ветка `p2gles` этого форка — эксперимент: заставить POSTAL 2 из этого порта работать на ТВ-приставке
-(Amlogic S905X3: 4× Cortex-A55, GPU **Mali-G31 MC1**, Debian trixie, Mesa/Panfrost, OpenGL ES 3.1).
-Оригинальный README автора — ниже, без изменений. Ветка `main` совпадает с исходным репозиторием.
+This fork tries to make the port playable on a TV box: Amlogic S905X3 (4x Cortex-A55, **Mali-G31 MC1**),
+Debian trixie, Mesa/Panfrost, OpenGL ES 3.1. The author's README follows below, unchanged; the fork's
+`main` branch matches the upstream repository and the work is on `p2gles`.
 
-## Что здесь сделано
+> **Status.** Everything since the first world-only renderer has been developed and checked on an x86
+> desktop (Intel UHD 730 and software GLES). **The current code has not been measured on the Mali
+> board yet**, so no frame rate is claimed for it.
 
-**1. Патчи порта для Mali / GLES** (коммиты `x96plus: ...`):
-- wgpu с бэкендом GLES и EGL на X11, WebGL2-путь Bevy на нативе (`patches/`, через `[patch.crates-io]`) —
-  без них на Panfrost Bevy не стартует (panvk v7 он не принимает);
-- пакеты игры читаются через mmap вместо копии в куче: процесс занимал ~3 ГБ и уходил в своп,
-  теперь своп 0 (`P2_PKG_NO_MMAP=1` — по-старому);
-- MSAA выключен на всех камерах (`P2_MSAA=1` — вернуть), дальняя плоскость камеры = конец тумана;
-- отчёт `frame ... ms` считает по реальному времени (раньше любой кадр > 250 мс показывался как 250);
-- `.int` в UTF-16BE (русская Steam-версия), `P2_TEX_SKIP_MIPS=N`.
+## What is different
 
-Итог на приставке: Bevy-версия ~3.5 fps. Замеры показали, что упор не в шейдеры и не в пиксели,
-а в накладные расходы Bevy в режиме совместимости (~40 мс пустого кадра), ~2400 отдельных вызовов
-отрисовки и логику игры (~30 мс). Подробности — в истории коммитов.
+1. **`P2GAME_GLES=1`**: the game logic stays on Bevy, but Bevy's renderer is not created; a thin
+   OpenGL ES 3.0 renderer ([`crates/p2gles`](crates/p2gles/README.md)) draws the frame.
+2. **Cheaper game logic**, for both renderers.
+3. **Board support** for the stock Bevy renderer on Panfrost, and lower memory use.
 
-**2. `crates/p2gles` — тонкий рендерер мира на OpenGL ES 3.0** (glow + glutin/EGL + winit):
-- карта собирается тем же `p2view::scene::build_scene`, рисуется в стиле UE2: текстура × лайтмапа (BSP),
-  текстура × запечённый цвет вершин (статик-меши), слои ландшафта по альфа-картам, туман;
-- вся статика в одном вершинном буфере, нарезана на ячейки по 48 м, отсечение по пирамиде и туману:
-  ~200 вызовов отрисовки вместо ~2400;
-- DXT-текстуры уходят в GPU без распаковки (видеопамять 636 → 256 МБ);
-- **только мир**: нет людей, логики, HUD и неба (фон — цвет тумана). Это этап 0 — проверка, стоит ли
-  заменять рендер Bevy своим.
+## Why a second renderer
 
-| Mali-G31 MC1, 800x480 | Mesa 25.0 | Mesa 26.1 |
+On the board the Bevy port ran at about 3.5 fps (~285 ms per frame, 800x480). The measurements pointed
+at neither shaders nor pixels: about 40 ms were Bevy's fixed overhead on its compatibility path even
+with an empty view, the world took roughly 2400 draw calls, and game logic about 30 ms.
+
+A first experiment that drew only the static world reached 95 fps (suburbs-3) and 125 fps (estates) on
+the board with Mesa 26.1, which justified putting such a renderer into the game. Those two numbers are
+for the standalone world viewer at that time: no characters, logic, HUD or sky, and none of the later
+changes.
+
+| Mali-G31 MC1, 800x480, spawn view (measured before this fork's later work) | Mesa 25.0 | Mesa 26.1 |
 |---|---|---|
-| p2gles, suburbs-3 (спавн) | 57 мс (17 fps) | **10.5 мс (95 fps)** |
-| p2gles, estates (спавн) | 47 мс (21 fps) | **8 мс (125 fps)** |
-| Bevy-порт, suburbs-3 (вся игра) | ~285 мс | ~282 мс |
-| Оригинал (i386) через box64 | 17 fps | 17–19 fps |
+| p2gles world only, suburbs-3 | 57 ms | 10.5 ms |
+| p2gles world only, estates | 47 ms | 8 ms |
+| Bevy port, whole game, suburbs-3 | ~285 ms | ~282 ms |
+| Original game (i386) through box64 | 17 fps | 17-19 fps |
 
-Mesa 26 для Debian trixie есть в `trixie-backports`.
-
-**Ловушка Panfrost**: если много draw-вызовов берут индексы из одного общего индексного буфера,
-драйвер каждый кадр заново сканирует индексы на CPU (`u_vbuf_get_minmax_index`, его кэш min/max на
-буфер маленький; `glDrawRangeElements` не помогает). В p2gles у каждого вызова свой индексный буфер
-(`P2GLES_ONE_IBO=1` — общий, для сравнения).
-
-## Сборка
-
-Нужна своя копия POSTAL 2 (Steam, `POSTAL2Complete`).
-
-**В Docker (рекомендуется, кросс-сборка под ARM и сборка под x86):**
-```
-tools/docker/build.sh arm p2gles    # -> target-docker/aarch64-unknown-linux-gnu/release/p2gles
-tools/docker/build.sh x86 p2gles    # -> target-docker/release/p2gles
-```
-Образ `p2-builder` собирается из `tools/docker/Dockerfile` при первом запуске (или `docker load -i p2-builder.tar`).
-Бинарник x86 из образа собран на glibc 2.41 (Debian trixie).
-
-**На хосте:** Rust stable (≥ 1.95 для Bevy 0.19), пакеты `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev`:
-```
-cargo build --release -p p2gles
-```
-
-## Запуск p2gles
+## Running the game on p2gles
 
 ```
-p2gles --game <папка POSTAL2Complete> --map suburbs-3 [--res 800x480] [--fullscreen] [--vsync]
-p2gles --map estates --bench 20          # замер: мс/кадр, fps, вызовы, треугольники каждые 5 с
-p2gles --map suburbs-3 --screenshot out.png
+P2GAME_GLES=1 p2game --game <POSTAL2Complete folder>
+P2GAME_GLES=1 p2game --game <folder> --map suburbs-3
 ```
-Управление: WASD — движение, мышь — обзор, Q/E — вниз/вверх, Shift — быстрее, Esc — выход.
-`--game` по умолчанию — `~/.local/share/Steam/steamapps/common/POSTAL2Complete`.
-Ещё: `--cam x,y,z,yaw,pitch` (юниты Unreal), `--fog start,end`, `--chunk M`, `--no-cull`;
-переменные `P2GLES_NO_BC`, `P2GLES_ANISO=N`, `P2GLES_SKIP=opaque,masked,splat,blend`.
-Отчёт первого этапа и скриншоты: `crates/p2gles/REPORT.md`, `crates/p2gles/shots/`.
 
-## Игра на p2gles (`P2GAME_GLES=1`)
-
-```
-P2GAME_GLES=1 p2game --map suburbs-3        # Bevy без рендера, кадр рисует p2gles
-```
-Bevy остаётся для логики (скрипты, физика, ИИ, звук, ECS), но рендер Bevy не создаётся вообще
-(`WgpuSettings::backends = None`: нет RenderApp, extract/queue/prepare). GL-контекст (EGL, GLES 3.0)
-создаётся на окне Bevy, всё рисуется в `Last` (`crates/p2game/src/gles/`: `bake` — статичный мир,
-`collect` — чтение ECS в списки отрисовки, `assets` — копии мешей и текстур в GPU, `frame` — кадр,
-`backend` — всё, что вызывает GL, `view` — что видит камера):
-
-| что | как |
+| Variable | Effect |
 |---|---|
-| BSP, статик-меши, ландшафт | запекаются один раз из `SceneData` (`p2gles::renderer`) через два тика скрипта после загрузки уровня (`bake_world`): к этому времени скрипт уже уничтожил меши других дней и праздников. Запекаются живые, видимые `bStatic` не-movers (то же правило, что в `merge_statics`); их сущности Bevy не рисуются |
-| двери и подвижные объекты | общий проход (`p2gles::dynamic`), сущности Bevy |
-| персонажи, оружие от первого лица, подбираемые предметы | общий проход: скиннинг в вершинном шейдере (до 64 костей), слои камер (`RenderLayers`) |
-| небо | камера неба (порядок -1) → тот же общий проход, потом очистка глубины и мир |
-| декорации (трава, камни) | общий проход, инстансинг (один draw на группу) |
-| частицы и декали p2fx | отдельный шейдер со стилями отрисовки UE2 |
-| HUD и меню p2canvas | порт `canvas.wgsl` на GLSL ES 3.0 |
+| `P2GAME_GLES=1` | Draw with p2gles instead of Bevy's renderer |
+| `P2GAME_GLES_SCALE=0.75` | Draw the 3D scene at a fraction of the window resolution (0.25-1); the HUD stays native. For frames limited by pixel fill: 0.75 shades 56% of the pixels, 0.5 a quarter |
+| `P2GAME_GLES_THREAD=0` | Keep all GL calls on the main thread instead of the render thread |
+| `P2GAME_NO_POSE_CULL=1` | Pose and draw characters even when no camera sees them |
+| `P2GAME_SERIAL_POSE=1` | Compute poses on one thread |
 
-### Ядра и разрешение
+Every 5 s the log has a `gles:` line. If `main thread waited` is well above zero, the frame is limited
+by rendering (try `P2GAME_GLES_SCALE`; more CPU cores will not help). Near zero means it is limited by
+the CPU. Total CPU load does not tell the two apart (30% of four cores can be one busy core), so look
+per thread: `top -H -p $(pidof p2game)`.
 
-| переменная | что делает |
-|---|---|
-| (по умолчанию) | GL на отдельном потоке `p2gles-render`: пока кадр N уходит в GPU, игра считает кадр N+1. В полёте не больше одного кадра, задержка ввода больше на кадр |
-| `P2GAME_GLES_THREAD=0` | всё на главном потоке, как раньше (для сравнения) |
-| `P2GAME_GLES_SCALE=0.75` | 3D рисуется в доле разрешения окна и растягивается, HUD — в родном. 0.75 — 56% пикселей, 0.5 — четверть |
+## What was improved, and why it is done that way
 
-Персонажи вне кадра и за туманом не позируются и не рисуются (`P2GAME_NO_POSE_CULL=1` — позировать
-всех, для проверки, если кто-то пропадает).
+### Rendering (`P2GAME_GLES=1`)
 
-Как читать строку `gles:` в логе: `main thread waited` заметно больше нуля — кадр упирается в GPU (поможет
-`P2GAME_GLES_SCALE`, ядра не помогут); около нуля — упор в процессор. Загрузку по ядрам показывает
-`top -H -p $(pidof p2game)`: общие 30% на четырёх ядрах не отличают одно занятое ядро от ожидания GPU.
+- **The static world is merged into a few hundred draws.** BSP, terrain and static meshes go into one
+  vertex buffer, cut into 48 m cells and culled by frustum and fog.
+- **The merge waits two script ticks after a level loads.** Level-start script destroys the meshes of
+  other days and holidays, so only then is it known which actors stay. Excluding every grouped actor at
+  load time instead had left 2407 of them as separate draws on suburbs-3; now 283 stay dynamic
+  (estates: 770 -> 197). It is the same rule the Bevy path uses to merge meshes.
+- **Fog is per vertex, and large triangles are split.** Per-pixel fog would cost fill rate, which this
+  GPU does not have. But per-vertex distance is wrong on huge triangles: the main menu is a 625 m shaft
+  made of 12 of them and came out black. World triangles longer than 16 m are split once, at load
+  (suburbs-3: 20% more world vertices, 1.5% more triangles in the spawn view). Fog blends in linear
+  light like Bevy (gamma 2.0 as a cheap stand-in for 2.2).
+- **GL runs on its own thread.** While frame N is submitted and presented, the game already runs frame
+  N+1, so the frame time approaches the longer of the two instead of their sum. One frame at most is in
+  flight; the price is one more frame of input latency.
+- **Only visible characters are posed.** The game used to compute the pose of every character and write
+  one transform per bone each frame, including those behind the camera. Posing now runs after the
+  cameras have moved and skips what no camera can see (ragdolls are always posed).
+- **Less redundant GL work:** uniforms are sent only when they change, characters upload a skeleton
+  once for all their parts, HUD and particle meshes reuse their buffers.
+- **Each draw has its own index buffer.** With one shared buffer Panfrost rescanned index ranges on the
+  CPU every frame (`u_vbuf_get_minmax_index`; its per-buffer cache is small).
+- **DXT textures are uploaded as they are** (video memory 636 -> 256 MB in the world viewer).
 
-Известные пробелы: динамический свет на персонажах — ambient + одно солнце; статик-меш, который скрипт
-спрячет или уничтожит позже (при том что он `bStatic`), останется виден — как и при слиянии в Bevy-пути.
-Проверено с файлами игры на программном GLES (Xvfb): `--smoke --windowed` проходит все этапы, меню,
-ходьба и пауза управляются настоящим вводом. На Mali эта версия ещё не проверялась.
+### Game logic
 
-## Дальше
+- **Bone attachments no longer need a full pose.** Placing a head or a weapon evaluated the whole
+  skeleton of every character on the map. Only the bone chains under the attachments are computed now,
+  by the same code as the full pose.
+- **Property handles.** Host code looked script properties up by name thousands of times per tick.
+  `prop!("Location")` resolves a name to a slot once per class (`uscript::prop`). Only hot paths use it.
+- **Work done only when needed:** a moving collider builds its BVH when something is first traced
+  against it, not on every rotation; particle settings are re-read from script only after script wrote
+  to the emitter.
+- **Cheap hashing** for maps keyed by object ids (a side effect: headless runs of the same build now
+  repeat each other apart from the wall clock).
+- **Poses are computed on several cores** when at least 8 visible characters need one. The gain is
+  small (see below).
 
-Замер на приставке, профилирование логики.
+### Measurements on x86
+
+These show the direction and size of each change, not what the board will do.
+
+| What | Before | After |
+|---|---|---|
+| Instructions per logic tick (headless suburbs-3, callgrind) | 15.1 M | 9.3 M |
+| Logic tick, suburbs-3 (headless, before property handles) | 2.19 ms | 1.58 ms |
+| Logic tick, estates (same) | 2.13 ms | 1.52 ms |
+| Whole frame on p2gles, suburbs-3 (Intel, offscreen; effect of view culling and related changes) | 6.23 ms | 5.24 ms |
+| Whole frame on p2gles, estates (same) | 5.28 ms | 4.47 ms |
+| Posing every character, 4 cores: serial -> parallel (suburbs-3) | 0.66 ms | 0.50 ms |
+
+With view culling on there is rarely enough posing left to split, and parallel posing makes no
+measurable difference to the whole frame.
+
+### How behaviour was checked
+
+- After 900 headless ticks, every property of every script object was compared with the previous
+  build. For the property handles only wall-clock fields differ, on estates and suburbs-3. For the
+  engine optimisations before them the same held on estates; the previous build did not repeat itself
+  on suburbs-3, and the differences stayed within its own run-to-run spread.
+- Temporary cross-checks compared the new shortcut with the old computation on live data (partial
+  poses bit for bit, property handles, skipped particle reads, culled characters never being visible).
+- `p2game --smoke --windowed` (menu, New Game, intro, first day, walk, fire, level portal) passes on a
+  virtual X display, and screenshots were compared between builds.
+
+### Stock Bevy renderer on the board, and memory
+
+- wgpu's GLES backend with EGL on X11 and Bevy's WebGL2 path on native (`patches/`, applied through
+  `[patch.crates-io]`). Bevy does not accept Panfrost's Vulkan driver.
+- Game packages are memory-mapped instead of read into the heap: the process had grown to about 3 GB
+  and was swapping (`P2_PKG_NO_MMAP=1` restores reading).
+- MSAA is off on all cameras (`P2_MSAA=1` restores it) and the camera's far plane follows the fog end
+  (`P2_NO_FOG_CULL=1`). **These two change the Bevy renderer on every platform.**
+- Frame time reports use wall-clock time (frames over 250 ms were reported as 250 ms).
+- UTF-16BE `.int` files (some Steam localisations); `P2_TEX_SKIP_MIPS=N` for less texture memory.
+
+## Known limitations
+
+- Dynamic actors are lit by ambient light and one sun.
+- A `bStatic` mesh that script hides or destroys after the world is merged stays visible (the Bevy
+  path's merging has the same limitation).
+- With the render thread, input lags one more frame.
+- Not yet verified on the board: performance, the render thread on Panfrost, and the extra fragment
+  cost of linear-light fog on fogged pixels.
+
+## Building
+
+You need your own copy of POSTAL 2 (Steam, `POSTAL2Complete`).
+
+**Docker** (cross-builds for ARM and builds for x86):
+```
+tools/docker/build.sh arm p2game    # -> target-docker/aarch64-unknown-linux-gnu/release/p2game
+tools/docker/build.sh x86 p2game    # -> target-docker/release/p2game
+```
+The `p2-builder` image is built from `tools/docker/Dockerfile` on first use. `P2_PROFILE=dist` builds
+with fat LTO (about 3-7% faster logic on x86; slow to build). x86 binaries from the image need glibc
+2.39 or newer.
+
+**On the host:** current stable Rust and `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev`:
+```
+cargo build --release -p p2game
+```
 
 ---
 

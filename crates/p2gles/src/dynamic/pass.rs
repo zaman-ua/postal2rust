@@ -146,7 +146,7 @@ pub(super) fn compile(gl: &glow::Context, masked: bool) -> Prog {
 impl Dynamic {
     /// Draws `draws` (opaque and alpha-tested first, blended far to near, overlays last). The caller
     /// has cleared and set the viewport; depth state is set here.
-    pub fn render(&mut self, gl: &glow::Context, vp: Mat4, cam: Vec3, env: &Env, draws: &mut Vec<Draw>) {
+    pub fn render(&mut self, gl: &glow::Context, vp: Mat4, cam: Vec3, env: &Env, draws: &mut [Draw]) {
         self.draws = 0;
         self.tris = 0;
         let rank = |d: &Draw| -> u8 {
