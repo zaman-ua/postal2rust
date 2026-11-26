@@ -364,6 +364,7 @@ fn draw_frame(world: &mut World) {
         Option<&VisibilityRange>,
     )>();
     let mut jq = world.query::<&GlobalTransform>();
+    let mut skin_cache: std::collections::HashMap<(Entity, usize), std::sync::Arc<Vec<Mat4>>> = std::collections::HashMap::new();
     {
         let meshes = world.resource::<Assets<Mesh>>();
         let images = world.resource::<Assets<Image>>();
@@ -394,21 +395,37 @@ fn draw_frame(world: &mut World) {
             let el = layers.cloned().unwrap_or_default();
             let model = gt.to_matrix();
             // Skinning matrices (joint world * inverse bind); skinned meshes ignore their own transform.
+            // A character's sections share one skeleton: compute its matrices once per frame.
+            let (mut center, mut radius) = (model.transform_point3(aabb.map(|a| Vec3::from(a.center)).unwrap_or(Vec3::ZERO)), aabb.map(|a| Vec3::from(a.half_extents).length() * model.x_axis.truncate().length().max(model.y_axis.truncate().length()).max(model.z_axis.truncate().length())).unwrap_or(0.0));
+            let mut cullable = nocull.is_none() && aabb.is_some();
             let joints = match skin {
                 Some(sk) => {
-                    let Some(ib) = inv_bind.get(&sk.inverse_bindposes) else { continue };
-                    let mut out = Vec::with_capacity(sk.joints.len());
-                    for (j, ibp) in sk.joints.iter().zip(ib.iter()) {
-                        let jm = jq.get(world, *j).map(|t| t.to_matrix()).unwrap_or(Mat4::IDENTITY);
-                        out.push(jm * *ibp);
+                    let Some(&first) = sk.joints.first() else { continue };
+                    // Rough bounds: the skeleton root, 3 m around it (characters; ragdolls stay close).
+                    if let Ok(t) = jq.get(world, first) {
+                        center = t.translation();
+                        radius = 3.0;
+                        cullable = true;
+                    } else {
+                        cullable = false;
                     }
-                    Some(out)
+                    match skin_cache.get(&(first, sk.joints.len())) {
+                        Some(v) => Some(v.clone()),
+                        None => {
+                            let Some(ib) = inv_bind.get(&sk.inverse_bindposes) else { continue };
+                            let mut out = Vec::with_capacity(sk.joints.len());
+                            for (j, ibp) in sk.joints.iter().zip(ib.iter()) {
+                                let jm = jq.get(world, *j).map(|t| t.to_matrix()).unwrap_or(Mat4::IDENTITY);
+                                out.push(jm * *ibp);
+                            }
+                            let v = std::sync::Arc::new(out);
+                            skin_cache.insert((first, sk.joints.len()), v.clone());
+                            Some(v)
+                        }
+                    }
                 }
                 None => None,
             };
-            let center = model.transform_point3(aabb.map(|a| Vec3::from(a.center)).unwrap_or(Vec3::ZERO));
-            let radius = aabb.map(|a| Vec3::from(a.half_extents).length() * model.x_axis.truncate().length().max(model.y_axis.truncate().length()).max(model.z_axis.truncate().length())).unwrap_or(0.0);
-            let cullable = nocull.is_none() && skin.is_none() && aabb.is_some();
             let base = mat.base;
             let (blend, cutoff) = match base.alpha_mode {
                 AlphaMode::Opaque => (Blend::Opaque, 0.0),

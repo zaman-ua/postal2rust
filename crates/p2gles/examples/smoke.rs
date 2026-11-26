@@ -53,7 +53,7 @@ impl ApplicationHandler for App {
         for b in [Blend::Mask, Blend::Alpha, Blend::Add, Blend::Multiply] {
             draws.push(Draw { blend: b, ..base.clone() });
         }
-        draws.push(Draw { mesh: 2, joints: Some(vec![Mat4::IDENTITY; 3]), ..base.clone() });
+        draws.push(Draw { mesh: 2, joints: Some(std::sync::Arc::new(vec![Mat4::IDENTITY; 3])), ..base.clone() });
         for i in 0..5 {
             draws.push(Draw { model: Mat4::from_translation(Vec3::new(i as f32, 0.0, -6.0)), blend: Blend::Mask, ..base.clone() }); // instanced run
         }

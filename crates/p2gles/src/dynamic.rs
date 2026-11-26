@@ -64,7 +64,7 @@ pub struct Draw {
     pub lightmap: Option<u64>,
     pub model: Mat4,
     /// Final skinning matrices (joint world * inverse bind). Replaces `model` when present.
-    pub joints: Option<Vec<Mat4>>,
+    pub joints: Option<std::sync::Arc<Vec<Mat4>>>,
     /// Base colour, gamma space.
     pub color: [f32; 4],
     pub blend: Blend,
