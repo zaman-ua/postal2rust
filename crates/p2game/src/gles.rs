@@ -433,6 +433,7 @@ fn draw_frame(world: &mut World) {
                 (Light::Dynamic, srgb(base.base_color))
             };
             let uv = bevy::math::Mat3::from(base.uv_transform).to_cols_array();
+            let mut pushed = false;
             for (ci, c) in cams.iter().enumerate() {
                 if !c.layers.intersects(&el) {
                     continue;
@@ -451,6 +452,7 @@ fn draw_frame(world: &mut World) {
                         continue;
                     }
                 }
+                pushed = true;
                 passes[ci].push(Draw {
                     mesh: aid(m.0.id()),
                     tex: base.base_color_texture.as_ref().map(|h| aid(h.id())),
@@ -463,11 +465,15 @@ fn draw_frame(world: &mut World) {
                     two_sided: base.double_sided || base.cull_mode.is_none(),
                     light,
                     uv,
-                    depth: dist,
+                    // Bevy sorts translucent draws by distance + depth_bias (bigger = drawn later).
+                    depth: dist - base.depth_bias,
                     overlay: false,
                 });
             }
             // Upload on first use (needs `gles`, which is out of the world right now).
+            if !pushed {
+                continue;
+            }
             upload_mesh(&mut gles, m.0.id(), mesh);
             if let Some(h) = &base.base_color_texture {
                 if let Some(img) = images.get(h) {
