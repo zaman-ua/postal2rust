@@ -2,9 +2,10 @@
 # Сборка в Docker-образе p2-builder (Debian trixie, Rust stable, кросс-компилятор aarch64).
 #   tools/docker/build.sh [arm|x86] [пакет]       по умолчанию: arm p2gles
 # Результат: target-docker/aarch64-unknown-linux-gnu/release/<пакет> (arm) или target-docker/release/<пакет> (x86).
+# P2_PROFILE=dist — сборка с fat LTO (долго; в путях выше вместо release — dist).
 # Образ: собирается из tools/docker/Dockerfile при первом запуске, или загружается заранее: docker load -i p2-builder.tar
 set -e
-ARCH=${1:-arm}; PKG=${2:-p2gles}
+ARCH=${1:-arm}; PKG=${2:-p2gles}; PROFILE=${P2_PROFILE:-release}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 IMG=${P2_BUILDER_IMAGE:-p2-builder:latest}
 docker image inspect "$IMG" >/dev/null 2>&1 || docker build -t "$IMG" "$ROOT/tools/docker"
@@ -16,4 +17,4 @@ esac
 # --offline, если зависимости уже есть в образе (p2-builder с флешки); иначе скачает.
 OFF=$(docker run --rm "$IMG" sh -c 'ls /opt/cargo/registry/cache 2>/dev/null | grep -q . && echo --offline' || true)
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/opt/cargo $ENVS -e CARGO_TARGET_DIR=/w/target-docker \
-  -v "$ROOT":/w -w /w "$IMG" cargo build $OFF --release -p "$PKG" $TGT
+  -v "$ROOT":/w -w /w "$IMG" cargo build $OFF --profile "$PROFILE" -p "$PKG" $TGT
