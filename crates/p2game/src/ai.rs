@@ -25,6 +25,8 @@
 //!
 //! `P2GAME_NO_AI=1` disables the subsystem.
 
+use uscript::prop;
+use uscript::prop::Prop;
 use crate::host::GameHost;
 use glam::Vec3;
 use std::cell::{Cell, RefCell};
@@ -104,20 +106,20 @@ fn level_hook(host: &GameHost, vm: &mut Vm) {
     }));
 }
 
-fn pb(vm: &Vm, a: ObjId, n: &str) -> bool {
-    vm.get_prop(a, n).is_some_and(|v| v.as_bool())
+fn pb(vm: &Vm, a: ObjId, n: &Prop) -> bool {
+    vm.field(a, n).is_some_and(|v| v.as_bool())
 }
 
-fn pf(vm: &Vm, a: ObjId, n: &str, d: f32) -> f32 {
-    vm.get_prop(a, n).map(|v| v.as_float()).filter(|f| f.is_finite()).unwrap_or(d)
+fn pf(vm: &Vm, a: ObjId, n: &Prop, d: f32) -> f32 {
+    vm.field(a, n).map(|v| v.as_float()).filter(|f| f.is_finite()).unwrap_or(d)
 }
 
-fn obj(vm: &Vm, a: ObjId, n: &str) -> Option<ObjId> {
-    vm.get_prop(a, n).and_then(|v| v.as_obj()).filter(|&o| !vm.objects[o].deleted)
+fn obj(vm: &Vm, a: ObjId, n: &Prop) -> Option<ObjId> {
+    vm.field(a, n).and_then(|v| v.as_obj()).filter(|&o| !vm.objects[o].deleted)
 }
 
 fn level_time(vm: &Vm) -> f32 {
-    vm.level.map(|l| pf(vm, l, "TimeSeconds", 0.0)).unwrap_or(0.0)
+    vm.level.map(|l| pf(vm, l, prop!("TimeSeconds"), 0.0)).unwrap_or(0.0)
 }
 
 thread_local! {
@@ -182,7 +184,7 @@ fn clear_line(a: Vec3, b: Vec3) -> bool {
 
 fn eye(vm: &Vm, p: ObjId) -> Vec3 {
     let mut l = Vec3::from(vm.actor_loc(p));
-    l.z += pf(vm, p, "BaseEyeHeight", pf(vm, p, "EyeHeight", 0.0));
+    l.z += pf(vm, p, prop!("BaseEyeHeight"), pf(vm, p, prop!("EyeHeight"), 0.0));
     l
 }
 
@@ -227,11 +229,11 @@ pub fn render_hidden(vm: &Vm, a: ObjId) -> bool {
 fn render_hidden_slow(vm: &Vm, a: ObjId) -> bool {
     let mut cur = a;
     for _ in 0..8 {
-        if vm.objects.get(cur).is_none_or(|o| o.deleted) || pb(vm, cur, "bHidden") {
+        if vm.objects.get(cur).is_none_or(|o| o.deleted) || pb(vm, cur, prop!("bHidden")) {
             return true;
         }
-        let on_bone = matches!(vm.get_prop(cur, "AttachmentBone"), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
-        match obj(vm, cur, "Base") {
+        let on_bone = matches!(vm.field(cur, prop!("AttachmentBone")), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
+        match obj(vm, cur, prop!("Base")) {
             Some(b) if on_bone && b != cur => cur = b,
             _ => return false,
         }
@@ -249,7 +251,7 @@ pub fn local_player_controller(vm: &Vm) -> Option<ObjId> {
     let (len, cached) = LPC.with(|c| c.get());
     if len == n {
         if let Some(c) = cached {
-            if vm.objects.get(c).is_some_and(|o| !o.deleted) && is_a(vm, c, "PlayerController") && !is_a(vm, c, "Camera") && obj(vm, c, "Pawn").is_some() {
+            if vm.objects.get(c).is_some_and(|o| !o.deleted) && is_a(vm, c, "PlayerController") && !is_a(vm, c, "Camera") && obj(vm, c, prop!("Pawn")).is_some() {
                 return Some(c);
             }
         }
@@ -261,18 +263,18 @@ pub fn local_player_controller(vm: &Vm) -> Option<ObjId> {
 
 fn local_player_controller_scan(vm: &Vm) -> Option<ObjId> {
     let pcs: Vec<ObjId> = vm.actors.iter().copied().filter(|&a| !vm.objects[a].deleted && is_a(vm, a, "PlayerController") && !is_a(vm, a, "Camera")).collect();
-    pcs.iter().copied().find(|&c| obj(vm, c, "Pawn").is_some()).or_else(|| pcs.first().copied())
+    pcs.iter().copied().find(|&c| obj(vm, c, prop!("Pawn")).is_some()).or_else(|| pcs.first().copied())
 }
 
 /// The local player: (controller, pawn, eye, view direction, cosine of the rendered half-angle).
 fn local_view(vm: &Vm) -> Option<(ObjId, Option<ObjId>, Vec3, Vec3, f32)> {
     let pc = local_player_controller(vm)?;
-    let pawn = obj(vm, pc, "Pawn");
-    let target = obj(vm, pc, "ViewTarget").or(pawn).unwrap_or(pc);
+    let pawn = obj(vm, pc, prop!("Pawn"));
+    let target = obj(vm, pc, prop!("ViewTarget")).or(pawn).unwrap_or(pc);
     let mut loc = Vec3::from(vm.actor_loc(target));
-    loc.z += pf(vm, target, "EyeHeight", 0.0);
+    loc.z += pf(vm, target, prop!("EyeHeight"), 0.0);
     let rot = vm.actor_rot(pc);
-    let fov = pf(vm, pc, "FOVAngle", 90.0);
+    let fov = pf(vm, pc, prop!("FOVAngle"), 90.0);
     let fov = if fov.is_finite() { fov.clamp(10.0, 170.0) } else { 90.0 };
     let half = ((fov * 0.5 + VIEW_MARGIN_DEG).min(89.0)).to_radians();
     Some((pc, pawn, loc, rot_dir(rot), half.cos()))
@@ -280,21 +282,21 @@ fn local_view(vm: &Vm) -> Option<(ObjId, Option<ObjId>, Vec3, Vec3, f32)> {
 
 /// `CanSee`: within SightRadius, inside PeripheralVision and in line of sight.
 pub fn can_see(vm: &Vm, viewer: ObjId, other: ObjId) -> bool {
-    let vp = if is_a(vm, viewer, "Controller") { obj(vm, viewer, "Pawn") } else { Some(viewer) };
+    let vp = if is_a(vm, viewer, "Controller") { obj(vm, viewer, prop!("Pawn")) } else { Some(viewer) };
     let Some(vp) = vp else { return false };
     let from = eye(vm, vp);
     let to = Vec3::from(vm.actor_loc(other));
     let d = to - from;
     let dist = d.length();
-    if dist > pf(vm, vp, "SightRadius", 5000.0) {
+    if dist > pf(vm, vp, prop!("SightRadius"), 5000.0) {
         return false;
     }
     let fwd = rot_dir(vm.actor_rot(vp));
-    let periph = pf(vm, vp, "PeripheralVision", 0.0);
+    let periph = pf(vm, vp, prop!("PeripheralVision"), 0.0);
     if dist > 1.0 && fwd.dot(d / dist) < periph {
         return false;
     }
-    clear_line(from, to) || clear_line(from, to + Vec3::Z * pf(vm, other, "BaseEyeHeight", 0.0))
+    clear_line(from, to) || clear_line(from, to + Vec3::Z * pf(vm, other, prop!("BaseEyeHeight"), 0.0))
 }
 
 fn can_see_native(vm: &mut Vm, a: &mut Vec<Value>) -> uscript::Result<Value> {
@@ -306,10 +308,10 @@ fn can_see_native(vm: &mut Vm, a: &mut Vec<Value>) -> uscript::Result<Value> {
 fn safe_to_go_into_stasis(vm: &mut Vm, a: &mut Vec<Value>) -> uscript::Result<Value> {
     let Some(me) = vm.native_self() else { return Ok(Value::Bool(true)) };
     let min = a.first().map(|v| v.as_float()).unwrap_or(1000.0);
-    let Some(p) = obj(vm, me, "Pawn") else { return Ok(Value::Bool(true)) };
+    let Some(p) = obj(vm, me, prop!("Pawn")) else { return Ok(Value::Bool(true)) };
     let here = Vec3::from(vm.actor_loc(p));
     let near = vm.actors.iter().copied().any(|c| {
-        !vm.objects[c].deleted && is_a(vm, c, "PlayerController") && obj(vm, c, "Pawn").is_some_and(|pp| Vec3::from(vm.actor_loc(pp)).distance(here) < min)
+        !vm.objects[c].deleted && is_a(vm, c, "PlayerController") && obj(vm, c, prop!("Pawn")).is_some_and(|pp| Vec3::from(vm.actor_loc(pp)).distance(here) < min)
     });
     Ok(Value::Bool(!near))
 }
@@ -322,31 +324,31 @@ fn make_noise(vm: &mut Vm, a: &mut Vec<Value>) -> uscript::Result<Value> {
         return Ok(Value::Void);
     }
     // Only noises made by (or for) players are propagated, as the engine does for AI.
-    let inst = if is_a(vm, me, "Pawn") { Some(me) } else { obj(vm, me, "Instigator") };
-    let player_made = inst.and_then(|p| obj(vm, p, "Controller")).is_some_and(|c| is_a(vm, c, "PlayerController") || pb(vm, c, "bIsPlayer"));
+    let inst = if is_a(vm, me, "Pawn") { Some(me) } else { obj(vm, me, prop!("Instigator")) };
+    let player_made = inst.and_then(|p| obj(vm, p, prop!("Controller"))).is_some_and(|c| is_a(vm, c, "PlayerController") || pb(vm, c, prop!("bIsPlayer")));
     if !player_made {
         return Ok(Value::Void);
     }
     let src = Vec3::from(vm.actor_loc(me));
-    let src_zone = vm.get_prop(me, "Region").cloned();
+    let src_zone = vm.field(me, prop!("Region")).cloned();
     let listeners: Vec<(ObjId, ObjId)> = vm
         .actors
         .iter()
         .copied()
-        .filter(|&c| !vm.objects[c].deleted && is_a(vm, c, "AIController") && !pb(vm, c, "bStasis"))
-        .filter_map(|c| obj(vm, c, "Pawn").filter(|&p| Some(p) != inst && p != me).map(|p| (c, p)))
+        .filter(|&c| !vm.objects[c].deleted && is_a(vm, c, "AIController") && !pb(vm, c, prop!("bStasis")))
+        .filter_map(|c| obj(vm, c, prop!("Pawn")).filter(|&p| Some(p) != inst && p != me).map(|p| (c, p)))
         .collect();
     let mut heard = 0;
     for (c, p) in listeners {
-        let range = pf(vm, p, "HearingThreshold", 2800.0) * loud;
+        let range = pf(vm, p, prop!("HearingThreshold"), 2800.0) * loud;
         let at = eye(vm, p);
         let dist = at.distance(src);
         if dist > range {
             continue;
         }
         let los = || clear_line(src + Vec3::Z * 8.0, at);
-        let same_zone = || src_zone.is_some() && vm.get_prop(p, "Region").cloned() == src_zone;
-        let hears = (pb(vm, p, "bLOSHearing") && los()) || (pb(vm, p, "bSameZoneHearing") && same_zone()) || (pb(vm, p, "bMuffledHearing") && dist * 2.0 <= range) || (pb(vm, p, "bAdjacentZoneHearing") && dist * 1.5 <= range);
+        let same_zone = || src_zone.is_some() && vm.field(p, prop!("Region")).cloned() == src_zone;
+        let hears = (pb(vm, p, prop!("bLOSHearing")) && los()) || (pb(vm, p, prop!("bSameZoneHearing")) && same_zone()) || (pb(vm, p, prop!("bMuffledHearing")) && dist * 2.0 <= range) || (pb(vm, p, prop!("bAdjacentZoneHearing")) && dist * 1.5 <= range);
         if hears {
             vm.fire_event(c, "HearNoise", vec![Value::Float(loud), Value::Object(Some(me))]);
             heard += 1;
@@ -365,7 +367,7 @@ impl Ai {
     /// that follows the speed. When the pawn stops, script gets `PlayWaiting` to pick its idle.
     /// Controllers with `bControlAnimations` (scripted sequences) keep control.
     fn movement_anims(&self, vm: &mut Vm, host: &GameHost, dt: f32) {
-        let pawns: Vec<ObjId> = host.anims.borrow().keys().copied().filter(|&p| !vm.objects[p].deleted && is_a(vm, p, "Pawn") && pb(vm, p, "bPhysicsAnimUpdate")).collect();
+        let pawns: Vec<ObjId> = host.anims.borrow().keys().copied().filter(|&p| !vm.objects[p].deleted && is_a(vm, p, "Pawn") && pb(vm, p, prop!("bPhysicsAnimUpdate"))).collect();
         let mut stopped = Vec::new();
         let dt = dt.max(1e-3);
         {
@@ -375,13 +377,13 @@ impl Ai {
             turning.retain(|p, _| vm.objects.get(*p).is_some_and(|o| !o.deleted));
             let mut anims = host.anims.borrow_mut();
             for p in pawns {
-                let phys = vm.get_prop(p, "Physics").map(|v| v.as_int()).unwrap_or(0);
-                let v = Vec3::from(vm.get_prop(p, "Velocity").map(|v| v.as_vec()).unwrap_or_default());
+                let phys = vm.field(p, prop!("Physics")).map(|v| v.as_int()).unwrap_or(0);
+                let v = Vec3::from(vm.field(p, prop!("Velocity")).map(|v| v.as_vec()).unwrap_or_default());
                 let speed = Vec3::new(v.x, v.y, 0.0).length();
-                let scripted = obj(vm, p, "Controller").is_some_and(|c| pb(vm, c, "bControlAnimations"));
+                let scripted = obj(vm, p, prop!("Controller")).is_some_and(|c| pb(vm, c, prop!("bControlAnimations")));
                 let yaw = vm.actor_rot(p)[1];
                 let (old_yaw, was_turning) = turning.get(&p).copied().unwrap_or((yaw, false));
-                if phys != 1 || speed < 10.0 || scripted || pb(vm, p, "bIsCrouched") {
+                if phys != 1 || speed < 10.0 || scripted || pb(vm, p, prop!("bIsCrouched")) {
                     // Stopped: hand channel 0 to script (PlayWaiting) only while it still plays the
                     // movement loop this code started. Script that stopped the pawn to play its own
                     // anim (AWZombie attacks: StopAcc then PlayAnim z_swiperight/z_smash) kept it;
@@ -422,15 +424,15 @@ impl Ai {
                 let dir = v.normalize_or_zero();
                 let (f, r) = (fwd.dot(dir), fwd.cross(Vec3::Z).dot(dir) * -1.0);
                 let idx = if f >= 0.7 { 0 } else if f <= -0.7 { 1 } else if r > 0.0 { 3 } else { 2 };
-                let name = match vm.get_prop(p, "MovementAnims") {
+                let name = match vm.field(p, prop!("MovementAnims")) {
                     Some(Value::Array(a)) => a.get(idx).or_else(|| a.first()).map(|n| n.as_name()).unwrap_or_default(),
                     _ => String::new(),
                 };
                 if name.is_empty() || name.eq_ignore_ascii_case("None") {
                     continue;
                 }
-                let walking = pb(vm, p, "bIsWalking");
-                let ground = pf(vm, p, "GroundSpeed", 300.0).max(1.0) * if walking { pf(vm, p, "WalkingPct", 0.4).max(0.05) } else { 1.0 };
+                let walking = pb(vm, p, prop!("bIsWalking"));
+                let ground = pf(vm, p, prop!("GroundSpeed"), 300.0).max(1.0) * if walking { pf(vm, p, prop!("WalkingPct"), 0.4).max(0.05) } else { 1.0 };
                 let rate = (speed / ground).clamp(0.3, 2.5);
                 let Some(x) = anims.get_mut(&p) else { continue };
                 // A one-shot that script started on channel 0 (attack, gesture) plays out; its
@@ -490,7 +492,7 @@ impl Ai {
                 let visible = match occl.get(&p) {
                     Some(&(next, vis)) if now < next && next - now < 0.5 => vis,
                     _ => {
-                        let h = pf(vm, p, "CollisionHeight", 40.0);
+                        let h = pf(vm, p, prop!("CollisionHeight"), 40.0);
                         let vis = clear_line(eye_at, at) || clear_line(eye_at, at + Vec3::Z * h * 0.8);
                         // Spread re-checks over frames: 0.08 to 0.14 s per pawn.
                         let next = now + 0.08 + 0.06 * ((p as u32).wrapping_mul(2654435761) >> 24) as f32 / 255.0;
@@ -501,7 +503,7 @@ impl Ai {
                 if !visible {
                     st.occluded += 1;
                 } else {
-                    vm.set_prop(p, "LastRenderTime", Value::Float(now));
+                    vm.set_field(p, prop!("LastRenderTime"), Value::Float(now));
                     st.rendered += 1;
                 }
             }
@@ -509,18 +511,18 @@ impl Ai {
         // 2. Native stasis tick.
         let mut wake = Vec::new();
         for &p in &pawns {
-            let Some(c) = obj(vm, p, "Controller") else { continue };
+            let Some(c) = obj(vm, p, prop!("Controller")) else { continue };
             if !is_a(vm, p, "FPSPawn") || !is_a(vm, c, "FPSController") {
                 continue;
             }
-            let lrt = pf(vm, p, "LastRenderTime", -1e9);
-            let stasis = pb(vm, c, "bStasis");
-            if stasis && !pb(vm, p, "bSliderStasis") && lrt + dt >= now {
+            let lrt = pf(vm, p, prop!("LastRenderTime"), -1e9);
+            let stasis = pb(vm, c, prop!("bStasis"));
+            if stasis && !pb(vm, p, prop!("bSliderStasis")) && lrt + dt >= now {
                 wake.push(c);
-            } else if !stasis && pb(vm, p, "bAllowStasis") {
-                let ttl = pf(vm, p, "TimeTillStasis", 0.0);
-                if ttl > 0.0 && lrt + ttl < now && !pb(vm, c, "bPendingStasis") {
-                    vm.set_prop(c, "bPendingStasis", Value::Bool(true));
+            } else if !stasis && pb(vm, p, prop!("bAllowStasis")) {
+                let ttl = pf(vm, p, prop!("TimeTillStasis"), 0.0);
+                if ttl > 0.0 && lrt + ttl < now && !pb(vm, c, prop!("bPendingStasis")) {
+                    vm.set_field(c, prop!("bPendingStasis"), Value::Bool(true));
                     st.pending += 1;
                 }
             }
@@ -537,11 +539,11 @@ impl Ai {
         // RotationRate (bRotateToDesired). While a movement latent steers, the movement direction
         // wins (physics::steer faces the destination).
         for &p in &pawns {
-            let Some(c) = obj(vm, p, "Controller") else { continue };
-            if !is_a(vm, c, "AIController") || pb(vm, c, "bStasis") {
+            let Some(c) = obj(vm, p, prop!("Controller")) else { continue };
+            if !is_a(vm, c, "AIController") || pb(vm, c, prop!("bStasis")) {
                 continue;
             }
-            let Some(f) = obj(vm, c, "Focus").filter(|&f| f != p && !vm.objects[f].deleted) else { continue };
+            let Some(f) = obj(vm, c, prop!("Focus")).filter(|&f| f != p && !vm.objects[f].deleted) else { continue };
             if vm.objects[c].exec.latent.as_ref().is_some_and(|l| l.name.to_ascii_lowercase().starts_with("move")) {
                 continue;
             }
@@ -550,33 +552,33 @@ impl Ai {
                 continue;
             }
             let yaw = (d.y.atan2(d.x) * 32768.0 / std::f32::consts::PI) as i32 & 0xffff;
-            let mut want = vm.get_prop(p, "DesiredRotation").map(|v| v.as_rot()).unwrap_or_default();
+            let mut want = vm.field(p, prop!("DesiredRotation")).map(|v| v.as_rot()).unwrap_or_default();
             if want[1] & 0xffff != yaw {
                 want[1] = yaw;
-                vm.set_prop(p, "DesiredRotation", Value::Rotator(want));
+                vm.set_field(p, prop!("DesiredRotation"), Value::Rotator(want));
             }
             // Controller rotation follows the view (script reads Controller.Rotation for aim).
             let mut cr = vm.actor_rot(c);
             cr[1] = yaw;
-            vm.set_prop(c, "Rotation", Value::Rotator(cr));
+            vm.set_field(c, prop!("Rotation"), Value::Rotator(cr));
         }
         // 3. Sight checks against the local player's pawn.
         let Some((_, Some(ppawn), _, _, _)) = view else { return };
         if vm.objects[ppawn].deleted {
             return;
         }
-        let ctrls: Vec<(ObjId, ObjId)> = pawns.iter().copied().filter(|&p| p != ppawn).filter_map(|p| obj(vm, p, "Controller").map(|c| (c, p))).filter(|&(c, _)| is_a(vm, c, "AIController")).collect();
+        let ctrls: Vec<(ObjId, ObjId)> = pawns.iter().copied().filter(|&p| p != ppawn).filter_map(|p| obj(vm, p, prop!("Controller")).map(|c| (c, p))).filter(|&(c, _)| is_a(vm, c, "AIController")).collect();
         let mut seen = Vec::new();
         let mut checks = 0;
         for (c, _) in ctrls {
-            let sc = pf(vm, c, "SightCounter", 0.0) - dt;
+            let sc = pf(vm, c, prop!("SightCounter"), 0.0) - dt;
             if sc >= 0.0 {
-                vm.set_prop(c, "SightCounter", Value::Float(sc));
+                vm.set_field(c, prop!("SightCounter"), Value::Float(sc));
                 continue;
             }
             let next = sc + 0.15 + 0.1 * vm.frand();
-            vm.set_prop(c, "SightCounter", Value::Float(next.max(0.0)));
-            if pb(vm, c, "bStasis") || vm.is_ignored(c, "SeePlayer") {
+            vm.set_field(c, prop!("SightCounter"), Value::Float(next.max(0.0)));
+            if pb(vm, c, prop!("bStasis")) || vm.is_ignored(c, "SeePlayer") {
                 continue;
             }
             checks += 1;

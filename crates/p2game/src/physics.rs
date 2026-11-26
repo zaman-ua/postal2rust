@@ -18,6 +18,7 @@
 //!
 //! `P2GAME_NO_PHYSICS=1` disables the subsystem.
 
+use uscript::prop;
 use crate::host::GameHost;
 use glam::Vec3;
 use p2physics::{ActorId, LoadedMap, PhysWorld, VmBridge};
@@ -176,21 +177,21 @@ impl PhysHost {
         if vm.class_is_a(vm.objects[a].class, "Controller") {
             return false;
         }
-        if pb(vm, a, "bStatic") {
+        if vm.field(a, prop!("bStatic")).is_some_and(|v| v.as_bool()) {
             // UE2 keeps static actors with bCollideActors in the collision hash, so they still
             // get Touch/UnTouch (BuyerStandPoint: the cashier/priest serves whoever touches it).
             // Static blocking geometry is already in the level collision; only touch-only static
             // actors (no blocking, not world geometry, not drawn as a static mesh) are added.
             const DT_STATIC_MESH: u8 = 8;
-            return pb(vm, a, "bCollideActors")
-                && !pb(vm, a, "bBlockActors")
-                && !pb(vm, a, "bBlockPlayers")
-                && !pb(vm, a, "bWorldGeometry")
-                && !matches!(vm.get_prop(a, "DrawType"), Some(Value::Byte(DT_STATIC_MESH)))
+            return vm.field(a, prop!("bCollideActors")).is_some_and(|v| v.as_bool())
+                && !vm.field(a, prop!("bBlockActors")).is_some_and(|v| v.as_bool())
+                && !vm.field(a, prop!("bBlockPlayers")).is_some_and(|v| v.as_bool())
+                && !vm.field(a, prop!("bWorldGeometry")).is_some_and(|v| v.as_bool())
+                && !matches!(vm.field(a, prop!("DrawType")), Some(Value::Byte(DT_STATIC_MESH)))
                 && !vm.class_is_a(vm.objects[a].class, "Volume")
                 && !vm.class_is_a(vm.objects[a].class, "Mover");
         }
-        pb(vm, a, "bCollideActors") || pb(vm, a, "bCollideWorld") || vm.get_prop(a, "Physics").is_some_and(|p| p.as_int() != 0)
+        vm.field(a, prop!("bCollideActors")).is_some_and(|v| v.as_bool()) || vm.field(a, prop!("bCollideWorld")).is_some_and(|v| v.as_bool()) || vm.field(a, prop!("Physics")).is_some_and(|p| p.as_int() != 0)
     }
 
     pub(crate) fn register(&self, vm: &mut Vm, a: ObjId) {

@@ -234,10 +234,10 @@ fn vdist(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 impl Vm {
     pub fn actor_loc(&self, a: ObjId) -> [f32; 3] {
-        self.get_prop(a, "Location").map(|v| v.as_vec()).unwrap_or_default()
+        self.field(a, crate::prop!("Location")).map(|v| v.as_vec()).unwrap_or_default()
     }
     pub fn actor_rot(&self, a: ObjId) -> [i32; 3] {
-        self.get_prop(a, "Rotation").map(|v| v.as_rot()).unwrap_or_default()
+        self.field(a, crate::prop!("Rotation")).map(|v| v.as_rot()).unwrap_or_default()
     }
     fn prop_bool(&self, a: ObjId, n: &str) -> bool {
         self.get_prop(a, n).is_some_and(|v| v.as_bool())

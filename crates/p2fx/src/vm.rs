@@ -24,6 +24,7 @@
 //! Rendering is decoupled: [`FxWorld::snapshot`] produces Send data ([`FxFrame`]) that a Bevy
 //! front end draws with [`crate::FxVmPlugin`]. Headless runs simply never take snapshots.
 
+use uscript::prop;
 use crate::decal::{DecalSpec, Decals};
 use crate::load::{FxEmitter, FxLibrary};
 use crate::sim::{ActorSettings, Owner, SystemState, rotator_matrix};
@@ -601,11 +602,11 @@ pub fn thick_line_cylinder(a: Vec3, b: Vec3, lr: f32, lh: f32, p: Vec3, r: f32, 
 pub fn render_hidden(vm: &Vm, a: ObjId) -> bool {
     let mut cur = a;
     for _ in 0..8 {
-        if vm.objects.get(cur).is_none_or(|o| o.deleted) || b_of(vm.get_prop(cur, "bHidden")) {
+        if vm.objects.get(cur).is_none_or(|o| o.deleted) || b_of(vm.field(cur, prop!("bHidden"))) {
             return true;
         }
-        let on_bone = matches!(vm.get_prop(cur, "AttachmentBone"), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
-        match vm.get_prop(cur, "Base").and_then(|v| v.as_obj()) {
+        let on_bone = matches!(vm.field(cur, prop!("AttachmentBone")), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
+        match vm.field(cur, prop!("Base")).and_then(|v| v.as_obj()) {
             Some(b) if on_bone && b != cur => cur = b,
             _ => return false,
         }

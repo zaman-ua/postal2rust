@@ -19,6 +19,7 @@
 //!
 //! Everything works headless; the windowed mode reads the same instances to pose rigs.
 
+use uscript::prop;
 use glam::{Mat3, Mat4, Vec3};
 use p2anim::notify::{NotifyKind, decode_anim_notifies};
 use p2anim::runtime::{AnimEvent, AnimInstance, AnimSet, FrameUnit, RotSpace, Skeleton, mat3_to_rotator, rotator_mat3};
@@ -251,8 +252,8 @@ fn arg_vec(a: &[Value], k: usize) -> Vec3 {
 
 /// Actor-to-world transform in Unreal space from the actor's Location/Rotation/DrawScale.
 pub fn actor_world(vm: &Vm, a: ObjId) -> Mat4 {
-    let s = vm.get_prop(a, "DrawScale").map(|v| v.as_float()).unwrap_or(1.0);
-    let s3 = match vm.get_prop(a, "DrawScale3D") {
+    let s = vm.field(a, prop!("DrawScale")).map(|v| v.as_float()).unwrap_or(1.0);
+    let s3 = match vm.field(a, prop!("DrawScale3D")) {
         Some(Value::Vector(v)) => Vec3::from(*v),
         _ => Vec3::ONE,
     };
@@ -261,8 +262,8 @@ pub fn actor_world(vm: &Vm, a: ObjId) -> Mat4 {
     // stay on the floor), but its mesh is authored around the standing origin: UE2 draws it
     // HeightAdjust higher. Without this every crouched pawn (begging NPCs on their knees) sank
     // ~20 uu into the floor.
-    if vm.get_prop(a, "bIsCrouched").is_some_and(|v| v.as_bool()) {
-        let h = vm.get_prop(a, "CollisionHeight").map(|v| v.as_float()).unwrap_or(0.0);
+    if vm.field(a, prop!("bIsCrouched")).is_some_and(|v| v.as_bool()) {
+        let h = vm.field(a, prop!("CollisionHeight")).map(|v| v.as_float()).unwrap_or(0.0);
         let h0 = vm.default_value(vm.objects[a].class, "CollisionHeight").map(|v| v.as_float()).unwrap_or(h);
         if h0 > h {
             loc.z += h0 - h;
@@ -273,11 +274,11 @@ pub fn actor_world(vm: &Vm, a: ObjId) -> Mat4 {
     // static mesh (DT_StaticMesh) pivots around PrePivot in its own space (LocalToWorld:
     // Location + R * S * (v - PrePivot), as p2collide places map actors). Bolton parts with
     // a pivot (the Leprechaun hat and beard) and dead pawns' carcass offsets rely on it.
-    let pre = match vm.get_prop(a, "PrePivot") {
+    let pre = match vm.field(a, prop!("PrePivot")) {
         Some(Value::Vector(v)) if *v != [0.0; 3] => Vec3::from(*v),
         _ => Vec3::ZERO,
     };
-    let static_mesh = pre != Vec3::ZERO && matches!(vm.get_prop(a, "DrawType"), Some(Value::Byte(8)));
+    let static_mesh = pre != Vec3::ZERO && matches!(vm.field(a, prop!("DrawType")), Some(Value::Byte(8)));
     if pre != Vec3::ZERO && !static_mesh {
         loc += pre;
     }
@@ -297,7 +298,7 @@ pub fn actor_world(vm: &Vm, a: ObjId) -> Mat4 {
 /// widen in their own space) cut into the face. Uniform scales are unaffected.
 pub fn skel_actor_world(vm: &Vm, a: ObjId, mesh_xform: Mat4) -> Mat4 {
     let world = actor_world(vm, a);
-    let s3 = match vm.get_prop(a, "DrawScale3D") {
+    let s3 = match vm.field(a, prop!("DrawScale3D")) {
         Some(Value::Vector(v)) => Vec3::from(*v),
         _ => return world,
     };
@@ -397,7 +398,7 @@ impl GameHost {
     /// Makes sure the actor has an animation instance for its current `Mesh`. Returns false if the
     /// actor has no usable skeletal mesh.
     pub fn ensure(&self, vm: &Vm, a: ObjId) -> bool {
-        let Some(path) = vm.get_prop(a, "Mesh").and_then(|v| v.as_resource()).map(str::to_string) else { return false };
+        let Some(path) = vm.field(a, prop!("Mesh")).and_then(|v| v.as_resource()).map(str::to_string) else { return false };
         if let Some(cur) = self.anims.borrow().get(&a) {
             if cur.mesh.path.eq_ignore_ascii_case(&path) || lower(&cur.mesh.path).ends_with(&lower(&path)) {
                 return true;
@@ -494,9 +495,9 @@ impl GameHost {
                 // blend channels (WEAPONCHANNEL 13 s_load_sh, head look) end in the pawn's own
                 // AnimEnd, which fades them out; sent to a controller state that ignores them they
                 // stayed at alpha 1 and froze the upper body in the weapon-load pose.
-                let ctl = vm.get_prop(a, "Controller").and_then(|v| v.as_obj()).filter(|&c| !vm.objects[c].deleted);
+                let ctl = vm.field(a, prop!("Controller")).and_then(|v| v.as_obj()).filter(|&c| !vm.objects[c].deleted);
                 let ctl = ctl.filter(|&c| {
-                    vm.get_prop(c, "bControlAnimations").is_some_and(|v| v.as_bool()) || (channel == 0 && {
+                    vm.field(c, prop!("bControlAnimations")).is_some_and(|v| v.as_bool()) || (channel == 0 && {
                         let cls = vm.objects[c].class;
                         vm.find_virtual(Some(c), cls, "AnimEnd").is_some()
                     })
@@ -516,7 +517,7 @@ impl GameHost {
                         "Script"
                     }
                     NotifyKind::Trigger { event_name } => {
-                        let inst = vm.get_prop(a, "Instigator").cloned().unwrap_or(Value::Object(None));
+                        let inst = vm.field(a, prop!("Instigator")).cloned().unwrap_or(Value::Object(None));
                         vm.fire_event(a, "TriggerEvent", vec![Value::Name(event_name.clone()), Value::Object(Some(a)), inst]);
                         "Trigger"
                     }
@@ -552,8 +553,8 @@ impl GameHost {
         let depth = |vm: &Vm, mut a: ObjId| {
             let mut d = 0;
             while d < 8 {
-                let bone = vm.get_prop(a, "AttachmentBone").map(|v| v.as_name()).unwrap_or_default();
-                let Some(b) = vm.get_prop(a, "Base").and_then(|v| v.as_obj()).filter(|_| !bone.is_empty() && !bone.eq_ignore_ascii_case("None")) else { break };
+                let bone = vm.field(a, prop!("AttachmentBone")).map(|v| v.as_name()).unwrap_or_default();
+                let Some(b) = vm.field(a, prop!("Base")).and_then(|v| v.as_obj()).filter(|_| !bone.is_empty() && !bone.eq_ignore_ascii_case("None")) else { break };
                 a = b;
                 d += 1;
             }
@@ -577,8 +578,8 @@ impl GameHost {
             for &id in &ids {
                 // Script may change RelativeLocation/Rotation after attaching (heads do).
                 if let Some(child) = vm.objects.get(id as usize).filter(|o| !o.deleted).map(|_| id as ObjId) {
-                    let rel_l = Vec3::from(vm.get_prop(child, "RelativeLocation").map(|v| v.as_vec()).unwrap_or_default());
-                    let rel_r = vm.get_prop(child, "RelativeRotation").map(|v| v.as_rot()).unwrap_or_default();
+                    let rel_l = Vec3::from(vm.field(child, prop!("RelativeLocation")).map(|v| v.as_vec()).unwrap_or_default());
+                    let rel_r = vm.field(child, prop!("RelativeRotation")).map(|v| v.as_rot()).unwrap_or_default();
                     x.inst.set_attachment_relative(id, rel_l, rel_r);
                 }
             }
@@ -588,8 +589,8 @@ impl GameHost {
             if vm.objects.get(child).is_none_or(|o| o.deleted) {
                 continue;
             }
-            vm.set_prop(child, "Location", Value::Vector(w.w_axis.truncate().to_array()));
-            vm.set_prop(child, "Rotation", Value::Rotator(mat3_to_rotator(orthonormal(Mat3::from_mat4(w)))));
+            vm.set_field(child, prop!("Location"), Value::Vector(w.w_axis.truncate().to_array()));
+            vm.set_field(child, prop!("Rotation"), Value::Rotator(mat3_to_rotator(orthonormal(Mat3::from_mat4(w)))));
         }
     }
 

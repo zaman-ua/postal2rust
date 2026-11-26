@@ -21,6 +21,7 @@ pub mod host;
 pub mod nav;
 pub mod natives;
 pub mod objects;
+pub mod prop;
 pub mod vm;
 
 pub use bytecode::{Expr, Script, Stmt};

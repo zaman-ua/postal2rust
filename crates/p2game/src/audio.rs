@@ -16,6 +16,7 @@
 //! The engine lives in a [`SharedEngine`] so a windowed front end can feed it to an output device
 //! (`AudioOutput`) while headless runs mix into nothing (or render to a WAV for checks).
 
+use uscript::prop;
 use crate::host::GameHost;
 use glam::Vec3;
 use p2sound::engine::stereo_to_wav;
@@ -372,10 +373,10 @@ fn scan_ambients(vm: &Vm) -> HashMap<ObjId, (String, u32, u8, u8)> {
         if o.deleted {
             continue;
         }
-        let Some(Value::Resource(s)) = vm.get_prop(a, "AmbientSound") else { continue };
-        let r = vm.get_prop(a, "SoundRadius").map(|v| v.as_float()).unwrap_or(64.0);
-        let v = vm.get_prop(a, "SoundVolume").map(|v| v.as_int()).unwrap_or(128).clamp(0, 255) as u8;
-        let p = vm.get_prop(a, "SoundPitch").map(|v| v.as_int()).unwrap_or(64).clamp(0, 255) as u8;
+        let Some(Value::Resource(s)) = vm.field(a, prop!("AmbientSound")) else { continue };
+        let r = vm.field(a, prop!("SoundRadius")).map(|v| v.as_float()).unwrap_or(64.0);
+        let v = vm.field(a, prop!("SoundVolume")).map(|v| v.as_int()).unwrap_or(128).clamp(0, 255) as u8;
+        let p = vm.field(a, prop!("SoundPitch")).map(|v| v.as_int()).unwrap_or(64).clamp(0, 255) as u8;
         out.insert(a, (s.clone(), r.to_bits(), v, p));
     }
     out
@@ -384,12 +385,12 @@ fn scan_ambients(vm: &Vm) -> HashMap<ObjId, (String, u32, u8, u8)> {
 /// The local player's eye: (location, rotation).
 pub fn player_view(vm: &Vm) -> Option<(Vec3, [i32; 3])> {
     let pc = crate::ai::local_player_controller(vm)?;
-    let target = vm.get_prop(pc, "ViewTarget").and_then(|v| v.as_obj()).or_else(|| vm.get_prop(pc, "Pawn").and_then(|v| v.as_obj())).unwrap_or(pc);
+    let target = vm.field(pc, prop!("ViewTarget")).and_then(|v| v.as_obj()).or_else(|| vm.field(pc, prop!("Pawn")).and_then(|v| v.as_obj())).unwrap_or(pc);
     let mut loc = Vec3::from(vm.actor_loc(target));
-    if let Some(eh) = vm.get_prop(target, "EyeHeight") {
+    if let Some(eh) = vm.field(target, prop!("EyeHeight")) {
         loc.z += eh.as_float();
     }
-    let rot = vm.get_prop(pc, "Rotation").map(|v| v.as_rot()).unwrap_or_default();
+    let rot = vm.field(pc, prop!("Rotation")).map(|v| v.as_rot()).unwrap_or_default();
     Some((loc, rot))
 }
 

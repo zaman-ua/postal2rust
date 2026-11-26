@@ -7,6 +7,7 @@
 //! separate actors that the host moves to their bones, so they follow automatically. Actors
 //! spawned by script at runtime are picked up as they appear; destroyed or hidden ones are hidden.
 
+use uscript::prop;
 use crate::gles::View;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
@@ -118,7 +119,7 @@ fn is_mesh_actor(vm: &Vm, a: ObjId) -> bool {
     if flag("bOnlyOwnerSee") {
         return false;
     }
-    matches!(vm.get_prop(a, "DrawType"), Some(Value::Byte(DT_MESH))) && vm.get_prop(a, "Mesh").and_then(|v| v.as_resource()).is_some()
+    matches!(vm.field(a, prop!("DrawType")), Some(Value::Byte(DT_MESH))) && vm.field(a, prop!("Mesh")).and_then(|v| v.as_resource()).is_some()
 }
 
 use p2game::ai::render_hidden;
@@ -223,7 +224,7 @@ fn in_view(vm: &Vm, a: ObjId, x: &p2game::host::ActorAnim, views: &[View]) -> bo
     if x.inst.has_physics_pose() {
         return true;
     }
-    let scale = vm.get_prop(a, "DrawScale").map(|v| v.as_float()).filter(|s| *s > 0.0).unwrap_or(1.0);
+    let scale = vm.field(a, prop!("DrawScale")).map(|v| v.as_float()).filter(|s| *s > 0.0).unwrap_or(1.0);
     // Twice the bind pose's reach covers stretched poses.
     let radius = (x.inst.skeleton.reach() * scale * 2.0 / p2view::scene::UU_PER_M).max(MIN_RADIUS);
     let center = p2view::scene::to_bevy(vm.actor_loc(a));
@@ -239,7 +240,7 @@ pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<
     let mut anims = host.anims.borrow_mut();
     // `P2GAME_RIG_WATCH=ClassSubstr`: about once a second, the matching rigs' state.
     let watch = std::env::var("P2GAME_RIG_WATCH").ok().map(|s| s.to_ascii_lowercase());
-    let tick = vm.level.and_then(|l| vm.get_prop(l, "TimeSeconds")).map(|v| v.as_float()).unwrap_or(0.0);
+    let tick = vm.level.and_then(|l| vm.field(l, prop!("TimeSeconds"))).map(|v| v.as_float()).unwrap_or(0.0);
     static WATCH_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let wf = WATCH_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for r in rigs.iter() {
@@ -265,7 +266,7 @@ pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<
             // `P2GAME_RIG_TRACE=1`: a visible rig whose actor has no anim instance keeps its
             // last joint transforms (frozen in place).
             if std::env::var_os("P2GAME_RIG_TRACE").is_some() {
-                println!("RIG frozen {} {} loc {:?} base {:?}", r.actor, vm.object_name(r.actor), vm.actor_loc(r.actor), vm.get_prop(r.actor, "Base").and_then(|v| v.as_obj()).map(|b| vm.object_name(b)));
+                println!("RIG frozen {} {} loc {:?} base {:?}", r.actor, vm.object_name(r.actor), vm.actor_loc(r.actor), vm.field(r.actor, prop!("Base")).and_then(|v| v.as_obj()).map(|b| vm.object_name(b)));
             }
             continue;
         };

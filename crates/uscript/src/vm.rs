@@ -282,6 +282,8 @@ pub struct ClassInfo {
     /// Case-insensitive name hash ([`name_hash`]) to slot; `None` if two of the class's property
     /// names collide (then lookups use `slot_index`).
     pub slot_hash: Option<FastMap<u64, usize>>,
+    /// Slots by property handle (see [`crate::prop`]).
+    pub(crate) prop_cache: crate::prop::PropCache,
 }
 
 /// Runs `f` on an ASCII-lowercased copy of `s` without allocating for short names.
@@ -1072,6 +1074,7 @@ impl Vm {
             defaults,
             slot_index,
             slot_hash,
+            prop_cache: Default::default(),
         };
         let id = self.classes.len();
         let mut pending: Vec<Pending> = Vec::new();

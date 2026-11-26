@@ -19,6 +19,7 @@
 //!
 //! `P2GAME_NO_RAGDOLL=1` disables the subsystem.
 
+use uscript::prop;
 use crate::host::{GameHost, actor_world, skel_actor_world};
 use glam::{Mat4, Vec3};
 use p2anim::ragdoll::{KaAsset, Ragdoll, RagdollWorld, load_karma_dir};
@@ -117,7 +118,7 @@ impl RagdollWorld for LevelWorld {
 }
 
 fn physics(vm: &Vm, a: ObjId) -> u8 {
-    vm.get_prop(a, "Physics").map(|v| v.as_int() as u8).unwrap_or(0)
+    vm.field(a, prop!("Physics")).map(|v| v.as_int() as u8).unwrap_or(0)
 }
 
 /// `KParams.KSkeleton` when `KParams` is a KarmaParamsSkel.
@@ -175,7 +176,7 @@ impl Ragdolls {
                 if physics(vm, a) == PHYS_KARMA_RAGDOLL && !anims.contains_key(&a) {
                     eprintln!("ragdoll: {} is PHYS_KarmaRagDoll but has no animation instance", vm.object_name(a));
                 }
-                if vm.state_name(a) == "Dying" && vm.get_prop(a, "KParams").and_then(|v| v.as_obj()).is_some() && physics(vm, a) != PHYS_KARMA_RAGDOLL {
+                if vm.state_name(a) == "Dying" && vm.field(a, prop!("KParams")).and_then(|v| v.as_obj()).is_some() && physics(vm, a) != PHYS_KARMA_RAGDOLL {
                     eprintln!("ragdoll: {} Dying with KParams but Physics {}", vm.object_name(a), physics(vm, a));
                 }
             }
@@ -217,8 +218,8 @@ impl Ragdolls {
                 }
                 // The actor follows the pelvis (keeps its rotation; the pose is re-expressed).
                 let root = l.doll.root_position();
-                vm.set_prop(a, "Location", Value::Vector(root.to_array()));
-                vm.set_prop(a, "Velocity", Value::Vector([0.0; 3]));
+                vm.set_field(a, prop!("Location"), Value::Vector(root.to_array()));
+                vm.set_field(a, prop!("Velocity"), Value::Vector([0.0; 3]));
             }
             let m2w = skel_actor_world(vm, a, x.inst.skeleton.mesh_xform) * x.inst.skeleton.mesh_xform;
             // A settled doll keeps its pose: rebuilding the bone matrices each frame cost
