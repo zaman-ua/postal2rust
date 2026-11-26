@@ -654,6 +654,9 @@ pub struct Vm {
     pub(crate) tick_slots: Rc<Vec<Option<[usize; 4]>>>,
     /// Per class: true when an actor outside any state has no Tick to run (see `tick_actor`).
     pub(crate) tick_noop: Vec<Option<bool>>,
+    /// Per object: the slot generation at which `tick_actor` last found it idle (no Tick to run,
+    /// no state, no timer, no life span); 0 = not known idle. See `tick_actor`.
+    pub(crate) tick_idle: Vec<u64>,
     pub(crate) object_slot_cache: Rc<Vec<Vec<usize>>>,
     pub missing_native_policy: MissingNativePolicy,
     /// Unimplemented natives encountered, keyed `"Class.Function"`, with call counts.
@@ -721,6 +724,7 @@ impl Vm {
             profile_events: HashMap::new(),
             tick_slots: Rc::new(Vec::new()),
             tick_noop: Vec::new(),
+            tick_idle: Vec::new(),
             object_slot_cache: Rc::new(Vec::new()),
             missing_native_policy: MissingNativePolicy::Strict,
             missing_natives: HashMap::new(),

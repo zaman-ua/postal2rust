@@ -542,8 +542,19 @@ impl Vm {
     /// One frame for one actor: `Tick` event, latent action + state code, `Timer`, `LifeSpan`.
     /// Script errors are recorded in [`Vm::script_errors`].
     pub fn tick_actor(&mut self, obj: ObjId, dt: f32) {
-        if self.objects[obj].deleted {
-            return;
+        // Perf: most of a level's actors (static meshes, path nodes, lights...) do nothing per
+        // frame. Once one is found idle, it is skipped without touching its properties until any
+        // of them is written (the slot generation moves) or it enters a state: a timer or life
+        // span can only start through a property write. Saves reading ~5000 scattered property
+        // vectors per frame on a big level.
+        {
+            let o = &self.objects[obj];
+            if o.deleted {
+                return;
+            }
+            if self.tick_idle.get(obj).is_some_and(|&g| g == o.slots.generation()) && o.exec.state.is_none() && o.exec.code.is_none() && o.exec.latent.is_none() {
+                return;
+            }
         }
         let ids = self.tick_ids();
         // Perf: most actors (StaticMeshActor, Brush, PathNode...) have no Tick handler. Outside
@@ -574,7 +585,12 @@ impl Vm {
         if self.objects[obj].deleted {
             return;
         }
-        let Some([rate_s, counter_s, loop_s, life_s]) = ids.get(self.objects[obj].class).copied().flatten() else { return };
+        let Some([rate_s, counter_s, loop_s, life_s]) = ids.get(self.objects[obj].class).copied().flatten() else {
+            if noop {
+                self.mark_tick_idle(obj);
+            }
+            return;
+        };
         let rate = self.objects[obj].slots[rate_s].as_float();
         if rate > 0.0 {
             let counter = self.objects[obj].slots[counter_s].as_float() + dt;
@@ -603,7 +619,23 @@ impl Vm {
             } else {
                 self.objects[obj].slots[life_s] = Value::Float(left);
             }
+        } else if noop && rate <= 0.0 {
+            self.mark_tick_idle(obj);
         }
+    }
+
+    /// Remembers that `obj` has nothing to do per frame at its current slot generation, if it is
+    /// also outside any state code (see the fast path in `tick_actor`).
+    fn mark_tick_idle(&mut self, obj: ObjId) {
+        let o = &self.objects[obj];
+        if o.deleted || o.exec.state.is_some() || o.exec.code.is_some() || o.exec.latent.is_some() {
+            return;
+        }
+        let g = o.slots.generation();
+        if self.tick_idle.len() <= obj {
+            self.tick_idle.resize(obj + 1, 0);
+        }
+        self.tick_idle[obj] = g;
     }
 
     /// Slot indices of TimerRate, TimerCounter, bTimerLoop and LifeSpan per class (None for
