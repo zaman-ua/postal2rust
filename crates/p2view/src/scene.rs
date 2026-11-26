@@ -106,6 +106,7 @@ pub struct LightmapData {
 
 /// One terrain layer drawn as its own mesh; layers after the first blend over it using their
 /// alpha map, sampled per pixel through UV1 (heightmap-normalised coordinates).
+#[derive(Clone)]
 pub struct TerrainLayerMesh {
     pub mesh: MeshData,
     pub texture: Option<u32>,

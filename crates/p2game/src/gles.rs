@@ -72,6 +72,11 @@ impl Gles {
         Ok(Gles { gl, dynamic, stale_meshes: HashSet::new(), stale_tex: HashSet::new(), ctx, surface, display, renderer: None, size, frames: 0, win_start: std::time::Instant::now(), win_frames: 0, collect_ms: 0.0, submit_ms: 0.0 })
     }
 
+    /// Frees the previous level's world; the new one is baked a couple of script frames later.
+    pub fn drop_world(&mut self) {
+        self.renderer = None;
+    }
+
     /// Bakes the level's static geometry into GL buffers (replaces the previous level's).
     pub fn load_world(&mut self, data: &SceneData, skip_exports: HashSet<usize>) {
         let gl = unsafe { glow::Context::from_loader_function_cstr(|s| self.display.get_proc_address(s)) };
@@ -89,7 +94,8 @@ impl Gles {
     }
 }
 
-/// Entities whose geometry is baked into p2gles' world buffers: the generic pass skips them.
+/// Entities whose geometry is (or is about to be, until `bake_world` runs) in p2gles' world
+/// buffers: the generic pass skips them.
 #[derive(Resource, Default)]
 pub struct GlBaked(pub HashSet<Entity>);
 
@@ -121,7 +127,6 @@ pub fn classify_baked(mut commands: Commands, pending: Option<Res<ClassifyBaked>
         .filter(|(e, l, ranged)| !p.before.contains(e) && !p.movers.contains(e) && l.is_none_or(|l| l.intersects(&RenderLayers::layer(0))) && (!ranged || p.statics.contains(e)))
         .map(|(e, _, _)| e)
         .collect();
-    println!("gles: {} scene mesh entities baked into the GL world ({} mover entities stay dynamic)", baked.0.len(), p.movers.len());
     commands.remove_resource::<ClassifyBaked>();
 }
 

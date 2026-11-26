@@ -291,7 +291,7 @@ pub fn run(cfg: BootConfig, args: Args) {
         .add_systems(
             Update,
             (
-                (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, pose_rigs, crate::ui::hide_own_body, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override).chain(),
+                (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, bake_world, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, pose_rigs, crate::ui::hide_own_body, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override).chain(),
                 (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide).chain(),
             )
                 .chain(),
@@ -612,25 +612,13 @@ fn load_scene(
     // p2gles uploads DXT as is (no BC support query: its GL extension check decides).
     let mut data = scene::build_scene(&lib, &map, &scene::Options { gpu_bc: gpu_bc || use_gles, projectors: false }).unwrap_or_else(|e| panic!("scene: {e}"));
     let t_build = t0.elapsed().as_secs_f32();
-    // p2gles bakes only static mesh actors that script cannot change: movers and every actor that is
-    // not bStatic, starts hidden, or sits in a Group (PrepActorsByGroup destroys other days' and
-    // holidays' groups on the first tick) stay ordinary entities, driven by `sync_transforms`.
-    let mut gl_dynamic_exports: std::collections::HashSet<usize> = data.movers.iter().map(|m| m.export).collect();
-    if use_gles {
-        let vm = &sim.game.world.vm;
-        let pb = |o: ObjId, n: &str| vm.get_prop(o, n).is_some_and(|v| v.as_bool());
-        for &(export, o) in &level_actors {
-            let grouped = matches!(vm.get_prop(o, "Group"), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
-            if !pb(o, "bStatic") || pb(o, "bHidden") || grouped {
-                gl_dynamic_exports.insert(export);
-            }
-        }
-    }
     if let Some(g) = gles.as_mut() {
-        g.load_world(&data, gl_dynamic_exports.clone());
+        g.drop_world();
     }
     // With p2gles the statics are baked: nothing to merge.
     let merge = std::env::var_os("P2GAME_NO_MERGE").is_none() && !use_gles;
+    // The p2gles bake runs later (`bake_world`) and needs the terrain, which spawning takes away.
+    let terrain = use_gles.then(|| data.terrain.clone());
     let mut spawned = spawn::spawn_scene_with(&mut commands, &mut data, spawn::SpawnOptions { unlit: args.unlit, baked: true, merge }, &mut images, &mut meshes, &mut materials);
     println!("load: scene built in {t_build:.2} s, spawned in {:.2} s ({:.2} s since boot)", t0.elapsed().as_secs_f32() - t_build, boot_secs());
 
@@ -682,7 +670,7 @@ fn load_scene(
     }
     if use_gles {
         let before: std::collections::HashSet<Entity> = snap.before.clone().unwrap_or_default().into_iter().collect();
-        let movers = spawned.actors.iter().filter(|(x, _)| gl_dynamic_exports.contains(x)).flat_map(|(_, e)| e.iter().copied()).collect();
+        let movers = spawned.movers.iter().flat_map(|(_, e)| e.iter().copied()).collect();
         let statics = spawned.actors.values().flat_map(|e| e.iter().copied()).collect();
         commands.insert_resource(crate::gles::ClassifyBaked { before, movers, statics });
     }
@@ -736,6 +724,67 @@ fn load_scene(
         Transform::from_translation(pos + Vec3::Y * 1.2).with_rotation(cam_rot(yaw, 0.0)),
         FlyCam { yaw, pitch: 0.0 },
     ));
+    if let Some(terrain) = terrain {
+        data.terrain = terrain;
+        let actors = std::mem::take(&mut spawned.actors);
+        let movers = spawned.movers.iter().map(|(m, _)| m.export).collect();
+        commands.queue(move |w: &mut World| {
+            // Replaces a bake still pending from the previous level.
+            w.insert_non_send_resource(PendingBake(Some(BakeJob { data, actors, by_export, movers, frame: None })));
+        });
+    }
+}
+
+/// A level waiting for its p2gles bake (see [`bake_world`]).
+struct PendingBake(Option<BakeJob>);
+
+struct BakeJob {
+    data: scene::SceneData,
+    /// Map export index -> its static mesh entities.
+    actors: HashMap<usize, Vec<Entity>>,
+    by_export: HashMap<usize, ObjId>,
+    movers: std::collections::HashSet<usize>,
+    /// Script frame to bake at, set on the first run after loading.
+    frame: Option<u64>,
+}
+
+/// Bakes the level into p2gles' world buffers once level-start script has run, with the same rule
+/// as [`merge_statics`]: PrepActorsByGroup destroys other days' and holidays' grouped meshes on the
+/// first ticks, so only then is it known which actors stay. Baked: alive, visible, bStatic, not a
+/// mover; their entities are not drawn or driven again. Every other actor stays an ordinary entity
+/// under `sync_transforms`. Counted from this level's load: `sim.frames` runs across levels.
+fn bake_world(mut sim: NonSendMut<Sim>, pending: Option<NonSendMut<PendingBake>>, mut gles: Option<NonSendMut<crate::gles::Gles>>, baked: Option<ResMut<crate::gles::GlBaked>>) {
+    // Both exist only with P2GAME_GLES=1.
+    let (Some(mut pending), Some(mut baked)) = (pending, baked) else { return };
+    let Some(job) = pending.0.as_mut() else { return };
+    let at = *job.frame.get_or_insert(sim.frames as u64 + 2);
+    if (sim.frames as u64) < at {
+        return;
+    }
+    let Some(gles) = gles.as_mut() else { return };
+    let Some(job) = pending.0.take() else { return };
+    let vm = &sim.game.world.vm;
+    let pb = |o: ObjId, n: &str| vm.get_prop(o, n).is_some_and(|v| v.as_bool());
+    let keep = |e: usize| !job.movers.contains(&e) && job.by_export.get(&e).is_some_and(|&o| !vm.objects[o].deleted && pb(o, "bStatic") && !pb(o, "bHidden"));
+    let skip: std::collections::HashSet<usize> = job.data.instances.iter().map(|i| i.export).filter(|&e| !keep(e)).collect();
+    let mut stay_baked = std::collections::HashSet::new();
+    let mut dynamic = 0;
+    for (export, ents) in &job.actors {
+        if skip.contains(export) {
+            dynamic += ents.len();
+            for e in ents {
+                baked.0.remove(e);
+            }
+        } else {
+            stay_baked.extend(ents.iter().copied());
+        }
+    }
+    gles.load_world(&job.data, skip);
+    for d in sim.driven.iter_mut() {
+        d.entities.retain(|(e, _)| !stay_baked.contains(e));
+    }
+    sim.driven.retain(|d| !d.entities.is_empty());
+    println!("gles: {} static mesh entities baked, {dynamic} stay dynamic ({} driven actor groups left)", stay_baked.len(), sim.driven.len());
 }
 
 fn tick_script(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, ui: Res<crate::ui::UiInput>, mut sim: NonSendMut<Sim>) {
