@@ -6,6 +6,7 @@ use crate::shaders::{GRADE_FS, GRADE_VS, CANVAS_FS, CANVAS_VS, DYN_FS, DYN_VS, P
 use bevy_math::{Mat4, Vec3};
 use glow::HasContext;
 use p2view::scene::PixelFormat;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 pub const MAX_JOINTS: usize = 64;
@@ -96,6 +97,32 @@ struct GpuMesh {
     vbo: glow::Buffer,
     ibo: glow::Buffer,
     count: i32,
+    /// Whether this VAO has the per-instance attributes enabled (vertex array state).
+    instanced: Cell<bool>,
+}
+
+/// Per-draw uniforms last sent to a program during the current pass: a uniform keeps its value,
+/// so only changes are sent.
+#[derive(Default)]
+struct Sent {
+    inst: Option<bool>,
+    skin: Option<bool>,
+    /// Identity of the skeleton in `uJoints` (the sections of a character share one).
+    joints: Option<*const Mat4>,
+    uv: Option<[f32; 9]>,
+    mode: Option<i32>,
+    color: Option<[f32; 4]>,
+    cutoff: Option<f32>,
+    fog_mix: Option<f32>,
+}
+
+/// Records `value`; true if it differs from what was sent before.
+fn changed<T: PartialEq>(sent: &mut Option<T>, value: T) -> bool {
+    if sent.as_ref() == Some(&value) {
+        return false;
+    }
+    *sent = Some(value);
+    true
 }
 
 struct Prog {
@@ -179,6 +206,26 @@ fn compile(gl: &glow::Context, masked: bool) -> Prog {
     }
 }
 
+/// A new vertex array in the layout of `DYN_VS`; leaves it bound.
+unsafe fn new_mesh(gl: &glow::Context, vertices: &[u8], indices: &[u8], count: i32) -> GpuMesh {
+    let vao = gl.create_vertex_array().unwrap();
+    gl.bind_vertex_array(Some(vao));
+    let vbo = gl.create_buffer().unwrap();
+    gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices, glow::STATIC_DRAW);
+    let stride = STRIDE as i32;
+    for (loc, size, off) in [(0u32, 3, 0), (1, 3, 12), (2, 2, 24), (3, 2, 32), (4, 4, 40), (5, 4, 56)] {
+        gl.enable_vertex_attrib_array(loc);
+        gl.vertex_attrib_pointer_f32(loc, size, glow::FLOAT, false, stride, off);
+    }
+    gl.enable_vertex_attrib_array(6);
+    gl.vertex_attrib_pointer_i32(6, 4, glow::UNSIGNED_SHORT, stride, 72);
+    let ibo = gl.create_buffer().unwrap();
+    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+    gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, indices, glow::STATIC_DRAW);
+    GpuMesh { vao, vbo, ibo, count, instanced: Cell::new(false) }
+}
+
 impl Dynamic {
     pub fn new(gl: &glow::Context) -> Dynamic {
         let aniso = gl.supported_extensions().contains("GL_EXT_texture_filter_anisotropic");
@@ -205,10 +252,12 @@ impl Dynamic {
         self.textures.contains_key(&id)
     }
 
+    /// Uploads a mesh, or replaces the contents of the one already known by `id`. HUD and particle
+    /// meshes change every frame, so their GL objects are kept and only the data is sent again.
     pub fn add_mesh(&mut self, gl: &glow::Context, id: u64, m: &MeshIn) {
-        self.remove_mesh(gl, id);
         let n = m.pos.len();
         if n == 0 || m.indices.is_empty() {
+            self.remove_mesh(gl, id);
             return;
         }
         let mut buf = Vec::with_capacity(n * STRIDE);
@@ -229,25 +278,21 @@ impl Dynamic {
             }
         }
         debug_assert_eq!(buf.len(), n * STRIDE);
+        let indices: Vec<u8> = m.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
+        let count = m.indices.len() as i32;
         unsafe {
-            let vao = gl.create_vertex_array().unwrap();
-            gl.bind_vertex_array(Some(vao));
-            let vbo = gl.create_buffer().unwrap();
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &buf, glow::STATIC_DRAW);
-            let s = STRIDE as i32;
-            for (loc, size, off) in [(0u32, 3, 0), (1, 3, 12), (2, 2, 24), (3, 2, 32), (4, 4, 40), (5, 4, 56)] {
-                gl.enable_vertex_attrib_array(loc);
-                gl.vertex_attrib_pointer_f32(loc, size, glow::FLOAT, false, s, off);
+            if let Some(mesh) = self.meshes.get_mut(&id) {
+                // Changed once: expect it to keep changing.
+                gl.bind_vertex_array(Some(mesh.vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(mesh.vbo));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &buf, glow::DYNAMIC_DRAW);
+                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &indices, glow::DYNAMIC_DRAW);
+                mesh.count = count;
+            } else {
+                let mesh = new_mesh(gl, &buf, &indices, count);
+                self.meshes.insert(id, mesh);
             }
-            gl.enable_vertex_attrib_array(6);
-            gl.vertex_attrib_pointer_i32(6, 4, glow::UNSIGNED_SHORT, s, 72);
-            let ibo = gl.create_buffer().unwrap();
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-            let bytes: Vec<u8> = m.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
-            gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
             gl.bind_vertex_array(None);
-            self.meshes.insert(id, GpuMesh { vao, vbo, ibo, count: m.indices.len() as i32 });
         }
     }
 
@@ -332,6 +377,8 @@ impl Dynamic {
             gl.front_face(glow::CCW);
             gl.active_texture(glow::TEXTURE0);
             let mut cur_prog = usize::MAX;
+            let mut sent: [Sent; 2] = Default::default();
+            let mut joint_data: Vec<f32> = Vec::new();
             let mut cur_vao = None;
             let mut cur_tex: Option<Option<u64>> = None;
             let mut cur_state: Option<(Blend, bool)> = None;
@@ -414,8 +461,8 @@ impl Dynamic {
                     gl.active_texture(glow::TEXTURE0);
                 }
                 if cur_vao != Some(d.mesh) {
+                    // The index buffer binding is part of the vertex array.
                     gl.bind_vertex_array(Some(m.vao));
-                    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(m.ibo));
                     cur_vao = Some(d.mesh);
                 }
                 // Mirrored transforms (negative scale) flip the winding.
@@ -425,7 +472,10 @@ impl Dynamic {
                     cur_cw = cw;
                 }
                 let instanced = run > 1;
-                gl.uniform_1_i32(p.inst.as_ref(), instanced as i32);
+                let sent = &mut sent[pi];
+                if changed(&mut sent.inst, instanced) {
+                    gl.uniform_1_i32(p.inst.as_ref(), instanced as i32);
+                }
                 if instanced {
                     inst_data.clear();
                     for o in &draws[i - run..i] {
@@ -433,42 +483,56 @@ impl Dynamic {
                     }
                     gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.inst_vbo));
                     gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, std::slice::from_raw_parts(inst_data.as_ptr() as *const u8, inst_data.len() * 4), glow::STREAM_DRAW);
-                    for k in 0..4u32 {
-                        gl.enable_vertex_attrib_array(7 + k);
-                        gl.vertex_attrib_pointer_f32(7 + k, 4, glow::FLOAT, false, 64, k as i32 * 16);
-                        gl.vertex_attrib_divisor(7 + k, 1);
+                    if !m.instanced.replace(true) {
+                        for k in 0..4u32 {
+                            gl.enable_vertex_attrib_array(7 + k);
+                            gl.vertex_attrib_pointer_f32(7 + k, 4, glow::FLOAT, false, 64, k as i32 * 16);
+                            gl.vertex_attrib_divisor(7 + k, 1);
+                        }
                     }
-                } else {
+                } else if m.instanced.replace(false) {
                     for k in 0..4u32 {
                         gl.disable_vertex_attrib_array(7 + k);
                     }
                 }
+                if changed(&mut sent.skin, d.joints.is_some()) {
+                    gl.uniform_1_i32(p.skin.as_ref(), d.joints.is_some() as i32);
+                }
                 match &d.joints {
                     Some(j) => {
-                        gl.uniform_1_i32(p.skin.as_ref(), 1);
-                        let n = j.len().min(MAX_JOINTS);
-                        let flat: Vec<f32> = j[..n].iter().flat_map(|m| m.to_cols_array()).collect();
-                        gl.uniform_matrix_4_f32_slice(p.joints.as_ref(), false, &flat);
+                        if changed(&mut sent.joints, j.as_ptr()) {
+                            joint_data.clear();
+                            joint_data.extend(j.iter().take(MAX_JOINTS).flat_map(|m| m.to_cols_array()));
+                            gl.uniform_matrix_4_f32_slice(p.joints.as_ref(), false, &joint_data);
+                        }
                     }
-                    None => {
-                        gl.uniform_1_i32(p.skin.as_ref(), 0);
-                        gl.uniform_matrix_4_f32_slice(p.model.as_ref(), false, &d.model.to_cols_array());
-                    }
+                    // Instances take their transform from the attributes.
+                    None if !instanced => gl.uniform_matrix_4_f32_slice(p.model.as_ref(), false, &d.model.to_cols_array()),
+                    None => {}
                 }
-                gl.uniform_matrix_3_f32_slice(p.uvm.as_ref(), false, &d.uv);
-                gl.uniform_1_i32(
-                    p.mode.as_ref(),
-                    match d.light {
-                        Light::Dynamic => 0,
-                        Light::Lightmap => 1,
-                        Light::Vertex => 2,
-                        Light::Unlit => 3,
-                        Light::Unlit2x => 4,
-                    },
-                );
-                gl.uniform_4_f32(p.color.as_ref(), d.color[0], d.color[1], d.color[2], d.color[3]);
-                gl.uniform_1_f32(p.cutoff.as_ref(), d.cutoff);
-                gl.uniform_1_f32(p.fog_mix.as_ref(), if matches!(d.blend, Blend::Add | Blend::Multiply) { 0.0 } else { 1.0 });
+                if changed(&mut sent.uv, d.uv) {
+                    gl.uniform_matrix_3_f32_slice(p.uvm.as_ref(), false, &d.uv);
+                }
+                let mode = match d.light {
+                    Light::Dynamic => 0,
+                    Light::Lightmap => 1,
+                    Light::Vertex => 2,
+                    Light::Unlit => 3,
+                    Light::Unlit2x => 4,
+                };
+                if changed(&mut sent.mode, mode) {
+                    gl.uniform_1_i32(p.mode.as_ref(), mode);
+                }
+                if changed(&mut sent.color, d.color) {
+                    gl.uniform_4_f32(p.color.as_ref(), d.color[0], d.color[1], d.color[2], d.color[3]);
+                }
+                if changed(&mut sent.cutoff, d.cutoff) {
+                    gl.uniform_1_f32(p.cutoff.as_ref(), d.cutoff);
+                }
+                let fog_mix = if matches!(d.blend, Blend::Add | Blend::Multiply) { 0.0 } else { 1.0 };
+                if changed(&mut sent.fog_mix, fog_mix) {
+                    gl.uniform_1_f32(p.fog_mix.as_ref(), fog_mix);
+                }
                 if instanced {
                     gl.draw_elements_instanced(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0, run as i32);
                 } else {

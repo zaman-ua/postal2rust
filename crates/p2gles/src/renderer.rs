@@ -131,6 +131,9 @@ pub struct Renderer {
     pub total_tris: u64,
     /// false: the host clears (multi-camera frames); `render` only draws.
     pub clear: bool,
+    /// `P2GLES_SKIP` and `P2GLES_ONE_PROG`.
+    skip_passes: [bool; 4],
+    one_program: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -462,16 +465,12 @@ impl Renderer {
             gl.enable(glow::CULL_FACE);
             gl.cull_face(glow::BACK);
             gl.front_face(glow::CCW);
-            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris, clear: true }
+            // Diagnostics, read once: P2GLES_SKIP=opaque,masked,splat,blend leaves those passes out.
+            let skip = std::env::var("P2GLES_SKIP").unwrap_or_default();
+            let skip_passes = ["opaque", "masked", "splat", "blend"].map(|pass| skip.contains(pass));
+            let one_program = std::env::var_os("P2GLES_ONE_PROG").is_some();
+            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris, clear: true, skip_passes, one_program }
         }
-    }
-
-    pub fn clear_color(&self) -> [f32; 3] {
-        self.fog_color
-    }
-
-    pub fn gl(&self) -> &glow::Context {
-        &self.gl
     }
 
     pub fn render(&mut self, vp: Mat4, cam: Vec3, size: (u32, u32)) {
@@ -521,7 +520,6 @@ impl Renderer {
             let mut cur_tex = u32::MAX - 1;
             let mut cur_lm = u32::MAX - 1;
             let mut cur_alpha = u32::MAX - 1;
-            let mut cur_state: Option<Key> = None;
             let no_cull = self.no_cull;
             // Blended draws, back to front.
             let mut blended: Vec<usize> = self.order[3].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect();
@@ -536,16 +534,14 @@ impl Renderer {
                 self.order[2].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect(),
                 blended,
             ];
-            // Diagnostics: P2GLES_SKIP=opaque,masked,splat,blend leaves those passes out.
-            let skip = std::env::var("P2GLES_SKIP").unwrap_or_default();
             for (pi, list) in lists.iter().enumerate() {
-                if skip.contains(["opaque", "masked", "splat", "blend"][pi]) {
+                if self.skip_passes[pi] {
                     continue;
                 }
-                let ui = (pi == 1 && std::env::var_os("P2GLES_ONE_PROG").is_none()) as usize;
+                let ui = (pi == 1 && !self.one_program) as usize;
                 let u = &self.us[ui];
                 gl.use_program(Some(self.progs[ui]));
-                cur_state = None;
+                let mut cur_state: Option<Key> = None;
                 for &di in list {
                     let d = &self.draws[di];
                     let k = d.key;
