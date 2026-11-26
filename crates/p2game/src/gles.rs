@@ -315,10 +315,27 @@ fn draw_frame(world: &mut World) {
     if cams.is_empty() {
         return;
     }
-    // Sun / ambient for dynamic actors.
-    let sun_dir = {
+    // Sun / ambient for dynamic actors, as linear light. The Bevy scene is calibrated for camera
+    // exposure EV100 9.7 / 1.2 (spawn_lights): linear = lux * exposure (/ pi for the sun's Lambert term).
+    let exposure = 2f32.powf(-9.7) / 1.2;
+    let (sun_dir, sun_color) = {
         let mut q = world.query::<(&DirectionalLight, &GlobalTransform)>();
-        q.iter(world).next().map(|(_, gt)| Vec3::from(gt.forward())).unwrap_or(Vec3::new(0.3, -1.0, 0.2).normalize())
+        match q.iter(world).max_by(|a, b| a.0.illuminance.total_cmp(&b.0.illuminance)) {
+            Some((l, gt)) => {
+                let c = l.color.to_linear();
+                let k = l.illuminance * exposure / std::f32::consts::PI;
+                (Vec3::from(gt.forward()), [c.red * k, c.green * k, c.blue * k])
+            }
+            None => (Vec3::new(0.3, -1.0, 0.2).normalize(), [0.2; 3]),
+        }
+    };
+    let ambient = match world.get_resource::<GlobalAmbientLight>() {
+        Some(a) => {
+            let c = a.color.to_linear();
+            let k = a.brightness * exposure;
+            [c.red * k, c.green * k, c.blue * k]
+        }
+        None => [0.3; 3],
     };
 
     // Collect draws per camera pass.
@@ -576,7 +593,7 @@ fn draw_frame(world: &mut World) {
         let far = c.far.max(c.near + 1.0);
         let vp = Mat4::perspective_rh_gl(c.fov, c.aspect, c.near, far) * c.view;
         let (fs, fe, fc) = c.fog.unwrap_or((1.0e8, 2.0e8, [0.0; 3]));
-        let env = Env { fog_start: fs, fog_end: fe, fog_color: fc, ambient: [0.55; 3], sun_dir, sun_color: [0.5; 3] };
+        let env = Env { fog_start: fs, fog_end: fe, fog_color: fc, ambient, sun_dir, sun_color };
         // The baked world belongs to the default layer's camera.
         if c.layers.intersects(&RenderLayers::layer(0)) {
             if let Some(r) = g.renderer.as_mut() {

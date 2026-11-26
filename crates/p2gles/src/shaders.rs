@@ -141,7 +141,8 @@ void main() {
     else if (uMode == 4) light = vec3(2.0);
     else {
         vec3 n = normalize(vNrm);
-        light = uAmb + uSunCol * max(dot(n, -uSunDir), 0.0);
+        // uAmb / uSunCol are linear light; the frame is in display (gamma) space.
+        light = pow(uAmb + uSunCol * max(dot(n, -uSunDir), 0.0), vec3(1.0 / 2.2));
     }
     vec3 c = min(t.rgb * light, vec3(1.0));
     float f = clamp((vDist - uFog.x) / max(uFog.y - uFog.x, 1.0), 0.0, 1.0) * uFogMix;
