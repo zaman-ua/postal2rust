@@ -79,7 +79,8 @@ P2GAME_GLES=1 p2game --map suburbs-3        # Bevy без рендера, кад
 ```
 Bevy остаётся для логики (скрипты, физика, ИИ, звук, ECS), но рендер Bevy не создаётся вообще
 (`WgpuSettings::backends = None`: нет RenderApp, extract/queue/prepare). GL-контекст (EGL, GLES 3.0)
-создаётся на окне Bevy, всё рисуется в `Last` (`crates/p2game/src/gles.rs`):
+создаётся на окне Bevy, всё рисуется в `Last` (`crates/p2game/src/gles/`: `bake` — статичный мир,
+`collect` — чтение ECS в списки отрисовки, `assets` — копии мешей и текстур в GPU, `frame` — кадр):
 
 | что | как |
 |---|---|
