@@ -139,7 +139,10 @@ fn init_gles(world: &mut World) {
             println!("gles: context ready ({}x{})", size.0, size.1);
             world.insert_non_send_resource(g);
         }
-        Some(Err(e)) => panic!("gles: {e}"),
+        Some(Err(e)) => {
+            eprintln!("gles: cannot create the OpenGL ES 3.0 context on the game window: {e}\nrun without P2GAME_GLES=1 to use Bevy's renderer, or check EGL/Mesa (eglinfo, GL_VERSION >= ES 3.0)");
+            std::process::exit(1);
+        }
         None => {}
     }
 }
