@@ -179,6 +179,23 @@ impl AnimSet {
     }
 }
 
+/// The bones a pose computation covers.
+#[derive(Clone, Copy)]
+enum Bones<'a> {
+    All,
+    /// Flags by bone index. Must contain the parent of every bone it contains.
+    Only(&'a [bool]),
+}
+
+impl Bones<'_> {
+    fn contains(self, bone: usize) -> bool {
+        match self {
+            Bones::All => true,
+            Bones::Only(set) => set[bone],
+        }
+    }
+}
+
 /// An animation set linked to a particular skeleton.
 pub struct Linked {
     pub set: Arc<AnimSet>,
@@ -194,13 +211,17 @@ impl Linked {
 
     /// Samples a sequence at a normalized frame. Unanimated bones are None.
     pub fn sample(&self, seq: usize, frame: f32, looping: bool, out: &mut [Option<BoneTransform>]) {
+        self.sample_bones(seq, frame, looping, Bones::All, out);
+    }
+
+    fn sample_bones(&self, seq: usize, frame: f32, looping: bool, bones: Bones, out: &mut [Option<BoneTransform>]) {
         let Some(m) = self.set.anim.moves.get(seq) else { return };
         let n = self.set.frames(seq);
         let f = frame * n;
         for (i, t) in m.tracks.iter().enumerate() {
             let ab = m.bone_indices.get(i).map_or(i, |&b| b as usize);
             let Some(Some(sb)) = self.map.get(ab) else { continue };
-            if *sb >= out.len() {
+            if *sb >= out.len() || !bones.contains(*sb) {
                 continue;
             }
             let (q, p) = t.sample(f, n, looping);
@@ -375,6 +396,9 @@ pub struct AnimInstance {
     dirty: bool,
     /// Per-channel sample buffer reused by `evaluate`.
     scratch_sampled: Vec<Option<BoneTransform>>,
+    /// Buffers of the partial pose behind `attachment_transforms`.
+    partial_pose: Vec<BoneTransform>,
+    partial_world: Vec<Mat4>,
     /// Mesh-space bone matrices forced by physics (ragdoll); replaces the animated pose.
     physics_pose: Option<Vec<Mat4>>,
 }
@@ -399,6 +423,8 @@ impl AnimInstance {
             world: vec![Mat4::IDENTITY; n],
             dirty: true,
             scratch_sampled: Vec::new(),
+            partial_pose: Vec::new(),
+            partial_world: Vec::new(),
             physics_pose: None,
         };
         s.evaluate();
@@ -468,19 +494,19 @@ impl AnimInstance {
 
     fn sample_channel(&self, ch: &Channel) -> Option<Vec<Option<BoneTransform>>> {
         let mut out = Vec::new();
-        self.sample_channel_into(ch, &mut out).then_some(out)
+        self.sample_channel_into(ch, Bones::All, &mut out).then_some(out)
     }
 
     /// [`Self::sample_channel`] into a caller buffer (resized and cleared); false if the channel
     /// has no sequence.
-    fn sample_channel_into(&self, ch: &Channel, out: &mut Vec<Option<BoneTransform>>) -> bool {
+    fn sample_channel_into(&self, ch: &Channel, bones: Bones, out: &mut Vec<Option<BoneTransform>>) -> bool {
         let Some((l, s)) = ch.seq.as_ref() else { return false };
         out.clear();
         out.resize(self.skeleton.len(), None);
-        l.sample(*s, ch.frame, ch.looping, out);
+        l.sample_bones(*s, ch.frame, ch.looping, bones, out);
         if let Some(from) = &ch.tween_from {
             let t = if ch.tween_dur > 0.0 { (ch.tween_t / ch.tween_dur).clamp(0.0, 1.0) } else { 1.0 };
-            for (b, o) in out.iter_mut().enumerate() {
+            for (b, o) in out.iter_mut().enumerate().filter(|(b, _)| bones.contains(*b)) {
                 let target = o.unwrap_or(self.skeleton.ref_pose[b]);
                 *o = Some(BoneTransform::lerp(from[b], target, t));
             }
@@ -769,6 +795,31 @@ impl AnimInstance {
         Some(self.bone_actor_matrix(a.bone) * a.relative)
     }
 
+    /// [`Self::attachment_transform`] of every attachment in `ids` that exists. When the pose is out
+    /// of date only the bones those attachments hang from (and their ancestors) are computed, and
+    /// the pose stays out of date: actors nobody draws never pay for a full one. The results are
+    /// the same as from a full pose.
+    pub fn attachment_transforms(&mut self, ids: &[u64]) -> Vec<(u64, Mat4)> {
+        let found: Vec<(u64, Attachment)> = ids.iter().filter_map(|id| Some((*id, *self.attachments.get(id)?))).collect();
+        let x = self.skeleton.mesh_xform;
+        // A physics pose replaces the whole animated one.
+        if !self.dirty || self.physics_pose.is_some() || found.is_empty() {
+            return found.into_iter().map(|(id, a)| (id, x * self.bone_matrices()[a.bone] * a.relative)).collect();
+        }
+        let mut chain = vec![false; self.skeleton.len()];
+        for (_, a) in &found {
+            let mut b = a.bone;
+            while !std::mem::replace(&mut chain[b], true) && b != 0 {
+                b = self.skeleton.parents[b];
+            }
+        }
+        let (mut pose, mut world) = (std::mem::take(&mut self.partial_pose), std::mem::take(&mut self.partial_world));
+        self.animate(Bones::Only(&chain), &mut pose, &mut world);
+        let out = found.into_iter().map(|(id, a)| (id, x * world[a.bone] * a.relative)).collect();
+        (self.partial_pose, self.partial_world) = (pose, world);
+        out
+    }
+
     // ---- pose queries ---------------------------------------------------------------------
 
     /// Mesh-space bone matrices of the current pose.
@@ -875,12 +926,11 @@ impl AnimInstance {
         l.sample_root(*s, ch.frame, ch.looping)
     }
 
-    /// Recomputes local and mesh-space bone transforms.
-    pub fn evaluate(&mut self) {
+    /// The animated pose of `bones` into `pose` (parent-relative) and `world` (mesh space); entries
+    /// of other bones are left meaningless. Physics poses are not applied here.
+    fn animate(&mut self, bones: Bones, pose: &mut Vec<BoneTransform>, world: &mut Vec<Mat4>) {
         let skel = self.skeleton.clone();
         let n = skel.len();
-        // Reuse the previous pose's buffers (this runs for every animated actor every frame).
-        let mut pose = std::mem::take(&mut self.locals);
         pose.clear();
         pose.extend_from_slice(&skel.ref_pose);
         let mut sampled: Vec<Option<BoneTransform>> = std::mem::take(&mut self.scratch_sampled);
@@ -889,7 +939,7 @@ impl AnimInstance {
             if weight <= 0.0 {
                 continue;
             }
-            if !self.sample_channel_into(ch, &mut sampled) {
+            if !self.sample_channel_into(ch, bones, &mut sampled) {
                 continue;
             }
             for (b, s) in sampled.iter().enumerate() {
@@ -913,7 +963,7 @@ impl AnimInstance {
         if self.root_lock != 0 && n > 0 {
             if let Some((l, s)) = self.channels.first().and_then(|c| c.seq.clone()) {
                 let mut first = vec![None; n];
-                l.sample(s, 0.0, false, &mut first);
+                l.sample_bones(s, 0.0, false, bones, &mut first);
                 if let Some(f) = first[0] {
                     pose[0].pos = f.pos;
                     pose[0].rot = f.rot;
@@ -922,41 +972,55 @@ impl AnimInstance {
         }
         self.scratch_sampled = sampled;
         // Bone controllers, in bone order so parents are final before children.
-        let has_ctrl = !self.loc_ctrl.is_empty() || !self.rot_ctrl.is_empty();
-        let mut world_rot = if has_ctrl { vec![Quat::IDENTITY; n] } else { Vec::new() };
-        for b in 0..n {
-            if !has_ctrl {
-                break;
+        if !self.loc_ctrl.is_empty() || !self.rot_ctrl.is_empty() {
+            let mut world_rot = vec![Quat::IDENTITY; n];
+            for b in (0..n).filter(|&b| bones.contains(b)) {
+                if let Some(l) = self.loc_ctrl.get(&b) {
+                    pose[b].pos += l.offset * l.alpha;
+                }
+                let parent_rot = if b == 0 || skel.parents[b] == b { Quat::IDENTITY } else { world_rot[skel.parents[b]] };
+                if let Some(c) = self.rot_ctrl.get(&b) {
+                    let target = match c.space {
+                        RotSpace::Local => pose[b].rot * c.rot,
+                        RotSpace::Replace => c.rot,
+                        RotSpace::Component => parent_rot.inverse() * c.rot,
+                    };
+                    pose[b].rot = BoneTransform::lerp(pose[b], BoneTransform { rot: target, pos: pose[b].pos }, c.alpha).rot;
+                }
+                world_rot[b] = parent_rot * pose[b].rot;
             }
-            if let Some(l) = self.loc_ctrl.get(&b) {
-                pose[b].pos += l.offset * l.alpha;
-            }
-            let parent_rot = if b == 0 || skel.parents[b] == b { Quat::IDENTITY } else { world_rot[skel.parents[b]] };
-            if let Some(c) = self.rot_ctrl.get(&b) {
-                let target = match c.space {
-                    RotSpace::Local => pose[b].rot * c.rot,
-                    RotSpace::Replace => c.rot,
-                    RotSpace::Component => parent_rot.inverse() * c.rot,
-                };
-                pose[b].rot = BoneTransform::lerp(pose[b], BoneTransform { rot: target, pos: pose[b].pos }, c.alpha).rot;
-            }
-            world_rot[b] = parent_rot * pose[b].rot;
         }
         // Mesh-space matrices with bone scales.
-        let mut scale = vec![1.0f32; if self.scale_slots.is_empty() { 0 } else { n }];
-        for (b, s) in self.scale_slots.values() {
-            scale[*b] *= *s;
-        }
-        let mut world: Vec<Mat4> = std::mem::take(&mut self.world);
+        let scale = self.bone_scales();
         world.clear();
-        for b in 0..n {
+        world.resize(n, Mat4::IDENTITY);
+        for b in (0..n).filter(|&b| bones.contains(b)) {
             let local = match scale.get(b) {
                 Some(s) if *s != 1.0 => pose[b].mat() * Mat4::from_scale(Vec3::splat(*s)),
                 _ => pose[b].mat(),
             };
-            let m = if b == 0 || skel.parents[b] == b { local } else { world[skel.parents[b]] * local };
-            world.push(m);
+            world[b] = if b == 0 || skel.parents[b] == b { local } else { world[skel.parents[b]] * local };
         }
+    }
+
+    /// `SetBoneScale` factors by bone; empty when no slot is set.
+    fn bone_scales(&self) -> Vec<f32> {
+        let mut scale = vec![1.0f32; if self.scale_slots.is_empty() { 0 } else { self.skeleton.len() }];
+        for (b, s) in self.scale_slots.values() {
+            scale[*b] *= *s;
+        }
+        scale
+    }
+
+    /// Recomputes local and mesh-space bone transforms.
+    pub fn evaluate(&mut self) {
+        let skel = self.skeleton.clone();
+        let n = skel.len();
+        // Reuse the previous pose's buffers (this runs for every posed actor every frame).
+        let mut pose = std::mem::take(&mut self.locals);
+        let mut world = std::mem::take(&mut self.world);
+        self.animate(Bones::All, &mut pose, &mut world);
+        let scale = self.bone_scales();
         self.locals = pose;
         self.world = world;
         if let Some(p) = &self.physics_pose {
@@ -1397,5 +1461,41 @@ mod tests {
         assert!((m.w_axis.truncate() - Vec3::new(20.0, 1.0, 0.0)).length() < 1e-4);
         assert!(i.detach_from_bone(7));
         assert!(i.attachment_transform(7).is_none());
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    /// root - spine - (neck - head, arm - hand), with bent bones so every matrix differs.
+    fn instance() -> AnimInstance {
+        let names = ["root", "spine", "neck", "head", "arm", "hand"].map(String::from).to_vec();
+        let pose = (0..6).map(|i| BoneTransform { rot: Quat::from_rotation_z(0.1 * i as f32) * Quat::from_rotation_x(0.05), pos: Vec3::new(i as f32, 2.0, -1.0) }).collect();
+        let mut a = AnimInstance::new(Arc::new(Skeleton::new(names, vec![0, 0, 1, 2, 1, 4], pose, Mat4::from_translation(Vec3::new(0.0, 0.0, -40.0)))));
+        assert!(a.attach_to_bone(1, "head", Vec3::new(1.0, 0.0, 0.0), [0, 100, 0]));
+        assert!(a.attach_to_bone(2, "hand", Vec3::new(0.0, 3.0, 0.0), [500, 0, 0]));
+        a
+    }
+
+    fn pose_it(a: &mut AnimInstance) {
+        assert!(a.set_bone_rotation("spine", [0, 3000, 0], RotSpace::Local, 1.0));
+        assert!(a.set_bone_rotation("hand", [1000, 0, 2000], RotSpace::Component, 0.5));
+        assert!(a.set_bone_location("neck", Vec3::new(0.0, 0.0, 4.0), 1.0));
+        assert!(a.set_bone_scale(0, 0.5, Some("arm")));
+    }
+
+    #[test]
+    fn partial_pose_gives_the_full_pose_result_and_leaves_the_pose_stale() {
+        let (mut partial, mut full) = (instance(), instance());
+        pose_it(&mut partial);
+        pose_it(&mut full);
+        let got = partial.attachment_transforms(&[1, 2, 99]);
+        assert!(partial.dirty, "the full pose must still be computed on demand");
+        let want: Vec<(u64, Mat4)> = [1, 2].iter().map(|&id| (id, full.attachment_transform(id).unwrap())).collect();
+        assert_eq!(got, want);
+        // Asked again once the pose is current: the same matrices.
+        partial.bone_matrices();
+        assert_eq!(partial.attachment_transforms(&[1, 2]), want);
     }
 }

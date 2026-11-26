@@ -573,50 +573,15 @@ impl GameHost {
             let Some(x) = m.get_mut(&a) else { return };
             let world = skel_actor_world(vm, a, x.inst.skeleton.mesh_xform);
             let ids: Vec<u64> = x.inst.attachments().map(|(id, _)| *id).collect();
-            for id in ids {
+            for &id in &ids {
                 // Script may change RelativeLocation/Rotation after attaching (heads do).
                 if let Some(child) = vm.objects.get(id as usize).filter(|o| !o.deleted).map(|_| id as ObjId) {
                     let rel_l = Vec3::from(vm.get_prop(child, "RelativeLocation").map(|v| v.as_vec()).unwrap_or_default());
                     let rel_r = vm.get_prop(child, "RelativeRotation").map(|v| v.as_rot()).unwrap_or_default();
                     x.inst.set_attachment_relative(id, rel_l, rel_r);
                 }
-                let Some(t) = x.inst.attachment_transform(id) else { continue };
-                moves.push((id as ObjId, world * t));
             }
-        }
-        for (child, w) in moves {
-            if vm.objects.get(child).is_none_or(|o| o.deleted) {
-                continue;
-            }
-            vm.set_prop(child, "Location", Value::Vector(w.w_axis.truncate().to_array()));
-            vm.set_prop(child, "Rotation", Value::Rotator(mat3_to_rotator(orthonormal(Mat3::from_mat4(w)))));
-        }
-    }
-
-    #[allow(dead_code)]
-    fn update_attachments_unordered(&self, vm: &mut Vm) {
-        let mut moves = Vec::new();
-        {
-            let mut m = self.anims.borrow_mut();
-            for (&a, x) in m.iter_mut() {
-                if x.inst.attachments().next().is_none() || vm.objects[a].deleted {
-                    continue;
-                }
-                let world = skel_actor_world(vm, a, x.inst.skeleton.mesh_xform);
-                let ids: Vec<(u64, usize)> = x.inst.attachments().map(|(id, at)| (*id, at.bone)).collect();
-                for (id, bone) in ids {
-                    // Script may change RelativeLocation/Rotation after attaching (heads do).
-                    if let Some(child) = vm.objects.get(id as usize).filter(|o| !o.deleted).map(|_| id as ObjId) {
-                        let rel_l = Vec3::from(vm.get_prop(child, "RelativeLocation").map(|v| v.as_vec()).unwrap_or_default());
-                        let rel_r = vm.get_prop(child, "RelativeRotation").map(|v| v.as_rot()).unwrap_or_default();
-                        let name = x.inst.skeleton.names[bone].clone();
-                        x.inst.attach_to_bone(id, &name, rel_l, rel_r);
-                    }
-                    let Some(t) = x.inst.attachment_transform(id) else { continue };
-                    let w = world * t;
-                    moves.push((id as ObjId, w));
-                }
-            }
+            moves.extend(x.inst.attachment_transforms(&ids).into_iter().map(|(id, t)| (id as ObjId, world * t)));
         }
         for (child, w) in moves {
             if vm.objects.get(child).is_none_or(|o| o.deleted) {
