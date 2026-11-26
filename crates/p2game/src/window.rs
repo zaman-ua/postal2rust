@@ -612,8 +612,22 @@ fn load_scene(
     // p2gles uploads DXT as is (no BC support query: its GL extension check decides).
     let mut data = scene::build_scene(&lib, &map, &scene::Options { gpu_bc: gpu_bc || use_gles, projectors: false }).unwrap_or_else(|e| panic!("scene: {e}"));
     let t_build = t0.elapsed().as_secs_f32();
+    // p2gles bakes only static mesh actors that script cannot change: movers and every actor that is
+    // not bStatic, starts hidden, or sits in a Group (PrepActorsByGroup destroys other days' and
+    // holidays' groups on the first tick) stay ordinary entities, driven by `sync_transforms`.
+    let mut gl_dynamic_exports: std::collections::HashSet<usize> = data.movers.iter().map(|m| m.export).collect();
+    if use_gles {
+        let vm = &sim.game.world.vm;
+        let pb = |o: ObjId, n: &str| vm.get_prop(o, n).is_some_and(|v| v.as_bool());
+        for &(export, o) in &level_actors {
+            let grouped = matches!(vm.get_prop(o, "Group"), Some(Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
+            if !pb(o, "bStatic") || pb(o, "bHidden") || grouped {
+                gl_dynamic_exports.insert(export);
+            }
+        }
+    }
     if let Some(g) = gles.as_mut() {
-        g.load_world(&data, data.movers.iter().map(|m| m.export).collect());
+        g.load_world(&data, gl_dynamic_exports.clone());
     }
     // With p2gles the statics are baked: nothing to merge.
     let merge = std::env::var_os("P2GAME_NO_MERGE").is_none() && !use_gles;
@@ -668,7 +682,7 @@ fn load_scene(
     }
     if use_gles {
         let before: std::collections::HashSet<Entity> = snap.before.clone().unwrap_or_default().into_iter().collect();
-        let movers = spawned.movers.iter().flat_map(|(_, e)| e.iter().copied()).collect();
+        let movers = spawned.actors.iter().filter(|(x, _)| gl_dynamic_exports.contains(x)).flat_map(|(_, e)| e.iter().copied()).collect();
         let statics = spawned.actors.values().flat_map(|e| e.iter().copied()).collect();
         commands.insert_resource(crate::gles::ClassifyBaked { before, movers, statics });
     }
