@@ -11,8 +11,11 @@ use uscript::prop;
 use crate::gles::View;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
+use bevy::tasks::ComputeTaskPool;
+use p2anim::runtime::AnimInstance;
+use uscript::vm::FastMap;
 use p2anim::rig::{RigAssets, RigCache, c_mat};
-use p2game::host::{GameHost, resolve_path, skel_actor_world};
+use p2game::host::{ActorAnim, GameHost, resolve_path, skel_actor_world};
 use std::collections::{HashMap, HashSet};
 use uscript::vm::{ObjId, Value, Vm};
 
@@ -231,6 +234,36 @@ fn in_view(vm: &Vm, a: ObjId, x: &p2game::host::ActorAnim, views: &[View]) -> bo
     views.iter().any(|v| v.sees(center, radius))
 }
 
+/// Fewer stale poses than this are computed on the calling thread: waking workers costs more than
+/// it saves.
+const MIN_PARALLEL_POSES: usize = 8;
+
+/// Brings the poses of `actors` up to date, spread over Bevy's compute threads. Each instance only
+/// reads shared animation data and writes itself, so the result does not depend on the split.
+/// `P2GAME_SERIAL_POSE=1` leaves the work to the caller's own bone queries.
+fn evaluate_poses(anims: &mut FastMap<ObjId, ActorAnim>, actors: &HashSet<ObjId>) {
+    if std::env::var_os("P2GAME_SERIAL_POSE").is_some() {
+        return;
+    }
+    let mut stale: Vec<&mut AnimInstance> = anims.iter_mut().filter(|(a, x)| x.inst.pose_is_stale() && actors.contains(a)).map(|(_, x)| &mut x.inst).collect();
+    let pool = ComputeTaskPool::get();
+    let threads = pool.thread_num();
+    if threads < 2 || stale.len() < MIN_PARALLEL_POSES {
+        return;
+    }
+    // A few chunks per thread: skeletons differ in size.
+    let chunk = stale.len().div_ceil(threads * 2).max(1);
+    pool.scope(|scope| {
+        for poses in stale.chunks_mut(chunk) {
+            scope.spawn(async move {
+                for pose in poses {
+                    pose.evaluate();
+                }
+            });
+        }
+    });
+}
+
 /// Poses rigs from their actors' animation instances and placement. With `views`, only the rigs one
 /// of those cameras could draw: the others are hidden and cost neither a pose nor their joint
 /// transforms (the script side reads bones through the instance, which computes them on demand).
@@ -243,8 +276,10 @@ pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<
     let tick = vm.level.and_then(|l| vm.field(l, prop!("TimeSeconds"))).map(|v| v.as_float()).unwrap_or(0.0);
     static WATCH_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let wf = WATCH_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    for r in rigs.iter() {
-        let hidden = render_hidden(vm, r.actor) || views.is_some_and(|views| anims.get(&r.actor).is_some_and(|x| !in_view(vm, r.actor, x, views)));
+    // Who is drawn first, then their poses (in parallel), then the joint transforms.
+    let rigs: Vec<(&VmRig, bool)> = rigs.iter().map(|r| (r, render_hidden(vm, r.actor) || views.is_some_and(|views| anims.get(&r.actor).is_some_and(|x| !in_view(vm, r.actor, x, views))))).collect();
+    evaluate_poses(&mut anims, &rigs.iter().filter(|(_, hidden)| !hidden).map(|(r, _)| r.actor).collect());
+    for (r, hidden) in rigs {
         if let Some(w) = &watch {
             if wf % 60 == 0 && vm.classes[vm.objects[r.actor].class].name.to_ascii_lowercase().contains(w.as_str()) {
                 let sec_vis: Vec<String> = r.sections.iter().filter_map(|&s| vis.get(s).ok().map(|v| format!("{v:?}"))).collect();

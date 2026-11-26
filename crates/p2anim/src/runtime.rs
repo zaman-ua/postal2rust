@@ -1029,6 +1029,11 @@ impl AnimInstance {
         scale
     }
 
+    /// Whether the next pose query has to recompute the pose.
+    pub fn pose_is_stale(&self) -> bool {
+        self.dirty
+    }
+
     /// Recomputes local and mesh-space bone transforms.
     pub fn evaluate(&mut self) {
         let skel = self.skeleton.clone();
