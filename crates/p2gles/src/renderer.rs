@@ -1,5 +1,6 @@
 //! Scene baking (static geometry -> a few big buffers, spatial chunks) and the GLES 3.0 draw loop.
 
+use crate::program;
 use crate::shaders::{FS, VS};
 use bevy_math::{Mat4, Vec3, Vec4};
 use glow::HasContext;
@@ -253,21 +254,8 @@ impl Renderer {
         unsafe {
             // Programs: the same shader with and without the alpha-test discard.
             let build = |masked: bool| -> (glow::Program, Uniforms) {
-                let prog = gl.create_program().unwrap();
-                let fs = if masked { FS.replacen("#version 300 es\n", "#version 300 es\n#define ALPHA_TEST 1\n", 1) } else { FS.to_string() };
-                for (ty, src) in [(glow::VERTEX_SHADER, VS.to_string()), (glow::FRAGMENT_SHADER, fs)] {
-                    let s = gl.create_shader(ty).unwrap();
-                    gl.shader_source(s, &src);
-                    gl.compile_shader(s);
-                    if !gl.get_shader_compile_status(s) {
-                        panic!("shader: {}", gl.get_shader_info_log(s));
-                    }
-                    gl.attach_shader(prog, s);
-                }
-                gl.link_program(prog);
-                if !gl.get_program_link_status(prog) {
-                    panic!("link: {}", gl.get_program_info_log(prog));
-                }
+                let fs = if masked { program::with_define(FS, "ALPHA_TEST") } else { FS.into() };
+                let prog = program::link(&gl, "world", VS, &fs);
                 gl.use_program(Some(prog));
                 let loc = |n: &str| gl.get_uniform_location(prog, n);
                 let req = |n: &str| loc(n).unwrap_or_else(|| panic!("uniform {n}"));

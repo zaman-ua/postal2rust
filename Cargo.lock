@@ -4194,6 +4194,7 @@ name = "p2game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "foldhash 0.2.0",
  "glam",
  "glow",
  "glutin",
@@ -4223,6 +4224,7 @@ name = "p2gles"
 version = "0.1.0"
 dependencies = [
  "bevy_math",
+ "foldhash 0.2.0",
  "glow",
  "glutin",
  "glutin-winit",

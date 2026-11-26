@@ -22,10 +22,9 @@ pub(super) struct Resident {
 
 /// The key p2gles knows an asset by.
 pub(super) fn aid<T: Asset>(id: AssetId<T>) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    id.hash(&mut h);
-    h.finish()
+    use std::hash::BuildHasher;
+    // Computed several times per draw and frame: not SipHash.
+    foldhash::fast::FixedState::default().hash_one(id)
 }
 
 fn changed<T: Asset>(events: &mut MessageReader<AssetEvent<T>>, stale: &mut HashSet<u64>) {

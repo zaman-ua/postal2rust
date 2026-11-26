@@ -2,5 +2,6 @@
 //! The `p2gles` binary is a standalone fly-through viewer; `p2game` can embed [`renderer::Renderer`].
 
 pub mod dynamic;
+mod program;
 pub mod renderer;
 mod shaders;

@@ -127,7 +127,6 @@ pub(super) struct SceneMeshes<'w, 's> {
         'w,
         's,
         (
-            Entity,
             &'static Mesh3d,
             &'static GlobalTransform,
             &'static InheritedVisibility,
@@ -192,7 +191,7 @@ impl SceneMeshes<'_, '_> {
     /// it, uploading what they need.
     pub fn collect_meshes(&self, cams: &[Cam], gles: &mut Gles, meshes: &Assets<Mesh>, images: &Assets<Image>, passes: &mut [Pass]) {
         let mut skeletons = Skeletons::new();
-        for (entity, mesh3d, transform, visible, layers, skin, standard, baked_material, aabb, no_culling, range) in &self.entities {
+        for (mesh3d, transform, visible, layers, skin, standard, baked_material, aabb, no_culling, range) in &self.entities {
             if !visible.get() {
                 continue;
             }
