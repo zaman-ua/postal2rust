@@ -132,7 +132,7 @@ thread_local! {
     static AI_TIMING: bool = std::env::var_os("P2GAME_AI_TIMING").is_some();
     /// `class_is_a` results per (class, name): the perception passes ask the same few questions of
     /// every actor every frame, and walking the super chain with string compares adds up.
-    static ISA: RefCell<std::collections::HashMap<(usize, &'static str), bool>> = RefCell::new(Default::default());
+    static ISA: RefCell<uscript::vm::FastMap<(usize, &'static str), bool>> = RefCell::new(Default::default());
 }
 
 fn is_a(vm: &Vm, a: ObjId, class: &'static str) -> bool {

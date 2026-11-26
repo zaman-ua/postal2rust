@@ -19,6 +19,7 @@ use crate::world::PhysWorld;
 use glam::Vec3;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use uscript::vm::FastMap;
 use std::rc::Rc;
 use uscript::vm::{ClassId, ObjId, Value, Vm};
 
@@ -98,8 +99,8 @@ impl Obj<'_> {
 
 #[derive(Default, Clone)]
 pub struct VmBridge {
-    to_phys: HashMap<ObjId, ActorId>,
-    to_obj: HashMap<ActorId, ObjId>,
+    to_phys: FastMap<ObjId, ActorId>,
+    to_obj: FastMap<ActorId, ObjId>,
     /// Zone actor objects by map export (for ZoneChange); the LevelInfo is used for zone 0.
     pub zone_objects: HashMap<u32, ObjId>,
     /// Level static mesh actors baked into the level collision, by map export: a trace that hits
@@ -107,17 +108,17 @@ pub struct VmBridge {
     /// UrineBucket grave mound or a breakable prop), not the LevelInfo.
     pub level_actors: HashMap<u32, ObjId>,
     /// Per-class slot tables (shared by clones).
-    slots: Rc<RefCell<HashMap<ClassId, Rc<Slots>>>>,
+    slots: Rc<RefCell<FastMap<ClassId, Rc<Slots>>>>,
     /// Bound objects in object order (rebuilt after add/remove), for `pull_dynamic`.
     order: Option<Vec<ObjId>>,
     /// The Physics value last pushed to each object. A different value in the VM means script
     /// called SetPhysics since (e.g. PlayDying's PHYS_KarmaRagDoll); push leaves it for the next
     /// pull instead of overwriting it with the physics actor's stale mode.
-    pushed_physics: Rc<RefCell<HashMap<ObjId, u8>>>,
+    pushed_physics: Rc<RefCell<FastMap<ObjId, u8>>>,
     /// Sync points for skipping unchanged actors in `pull_dynamic`: per object, the slot write
     /// generation and map epoch at which script state and the physics actor last agreed (after a
     /// pull, carried forward by a push that found the object unchanged since that pull).
-    sync: Rc<RefCell<HashMap<ObjId, SyncPoint>>>,
+    sync: Rc<RefCell<FastMap<ObjId, SyncPoint>>>,
     /// Bumped whenever the object/physics actor maps change: `pull` resolves Base and Owner
     /// through them, so a sync point is only valid within one epoch.
     epoch: Rc<std::cell::Cell<u64>>,

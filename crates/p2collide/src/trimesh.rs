@@ -4,6 +4,7 @@
 use crate::bvh::Bvh;
 use crate::geom::{Aabb, Shape, sweep_impl};
 use glam::{Mat3, Vec3};
+use std::sync::OnceLock;
 
 /// Contact of a sweep against a [`TriMesh`].
 #[derive(Clone, Copy, Debug)]
@@ -16,21 +17,22 @@ pub struct MeshHit {
 
 pub struct TriMesh {
     tris: Vec<[Vec3; 3]>,
-    bvh: Bvh,
+    /// Built by the first query that needs it: a mover that turns every tick is re-placed far more
+    /// often than anything is traced against it.
+    bvh: OnceLock<Bvh>,
     pub bounds: Aabb,
 }
 
 impl Default for TriMesh {
     fn default() -> Self {
-        TriMesh { tris: Vec::new(), bvh: Bvh::default(), bounds: Aabb::EMPTY }
+        TriMesh { tris: Vec::new(), bvh: OnceLock::new(), bounds: Aabb::EMPTY }
     }
 }
 
 impl TriMesh {
     pub fn new(tris: Vec<[Vec3; 3]>) -> TriMesh {
-        let bvh = Bvh::build(&tris);
-        let bounds = if tris.is_empty() { Aabb::EMPTY } else { bvh.bounds() };
-        TriMesh { tris, bvh, bounds }
+        let bounds = tris.iter().fold(Aabb::EMPTY, |b, t| b.union(Aabb::from_points(t)));
+        TriMesh { tris, bvh: OnceLock::new(), bounds }
     }
 
     /// Transforms local triangles: `world = loc + m * (v - pivot)`.
@@ -58,7 +60,7 @@ impl TriMesh {
         }
         let (faces, sedges) = shape.features();
         let mut best: Option<MeshHit> = None;
-        self.bvh.query(&qb, |i| {
+        self.bvh.get_or_init(|| Bvh::build(&self.tris)).query(&qb, |i| {
             if let Some(h) = sweep_impl(start, shape, &faces, &sedges, d, &self.tris[i as usize]) {
                 let better = match best {
                     None => true,

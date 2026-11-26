@@ -24,6 +24,7 @@ use p2anim::notify::{NotifyKind, decode_anim_notifies};
 use p2anim::runtime::{AnimEvent, AnimInstance, AnimSet, FrameUnit, RotSpace, Skeleton, mat3_to_rotator, rotator_mat3};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
+use uscript::vm::FastMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use upkg::ObjRef;
@@ -67,7 +68,7 @@ pub struct AnimStats {
 pub struct GameHost {
     pub lib: Arc<Library>,
     pub map_name: RefCell<String>,
-    pub anims: RefCell<HashMap<ObjId, ActorAnim>>,
+    pub anims: RefCell<FastMap<ObjId, ActorAnim>>,
     meshes: RefCell<HashMap<String, Option<Rc<MeshInfo>>>>,
     sets: RefCell<HashMap<String, Option<Arc<AnimSet>>>>,
     /// Channel of the notify being delivered (`GetNotifyChannel`).
@@ -326,7 +327,7 @@ impl GameHost {
         Self {
             lib,
             map_name: RefCell::new(String::new()),
-            anims: RefCell::new(HashMap::new()),
+            anims: RefCell::new(Default::default()),
             meshes: RefCell::new(HashMap::new()),
             sets: RefCell::new(HashMap::new()),
             notify_channel: Cell::new(0),

@@ -318,24 +318,25 @@ impl ClassInfo {
         // a wrong slot (it just misses). Missing properties are not cached.
         const N: usize = 4096;
         thread_local! {
-            static CACHE: std::cell::RefCell<Vec<(usize, usize, u32)>> = std::cell::RefCell::new(vec![(0, 0, u32::MAX); N]);
+            static CACHE: [std::cell::Cell<(usize, usize, u32)>; N] = const { [const { std::cell::Cell::new((0, 0, u32::MAX)) }; N] };
         }
         // The slots buffer address is stable for a class's lifetime (the classes Vec may move
         // the ClassInfo itself when it grows).
         let (cp, np) = (self.slots.as_ptr() as usize, name.as_ptr() as usize);
         let idx = ((cp >> 4).wrapping_mul(0x9E37_79B9) ^ np.wrapping_mul(0x85EB_CA6B) ^ name.len()) % N;
         let hit = CACHE.with(|c| {
-            let e = c.borrow()[idx];
+            let e = c[idx].get();
             (e.0 == cp && e.1 == np && e.2 != u32::MAX).then_some(e.2 as usize)
         });
         if let Some(s) = hit {
-            if self.slots.get(s).is_some_and(|x| x.name == name) {
+            // Scripts and hosts often spell a property with different case: that is still a hit.
+            if self.slots.get(s).is_some_and(|x| x.name == name || x.name.eq_ignore_ascii_case(name)) {
                 return Some(s);
             }
         }
         let r = self.slot_uncached(name);
         if let Some(s) = r {
-            CACHE.with(|c| c.borrow_mut()[idx] = (cp, np, s as u32));
+            CACHE.with(|c| c[idx].set((cp, np, s as u32)));
         }
         r
     }

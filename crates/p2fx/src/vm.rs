@@ -51,6 +51,9 @@ pub struct VmFx {
     last_loc: Option<Vec3>,
     /// Values last written to / read from the VM per sub-emitter (to detect script edits).
     seen: Vec<Mirror>,
+    /// Per sub-emitter, the object's slot write generation once script and `defs` agreed (after
+    /// `push_runtime`). While it is unchanged there is nothing new to read.
+    synced: Vec<Option<u64>>,
     pub class: String,
     /// Stable id for render entities.
     pub id: u64,
@@ -276,7 +279,7 @@ impl FxWorld {
                 }
             }
         }
-        let mut fx = VmFx { actor: a, objs: kept, defs, res, settings, state, owner: Owner::default(), last_loc: None, seen, class: class.clone(), id, hidden, first_person };
+        let mut fx = VmFx { actor: a, objs: kept, defs, res, settings, state, owner: Owner::default(), last_loc: None, seen, synced: Vec::new(), class: class.clone(), id, hidden, first_person };
         fx.update_owner(vm, 0.0);
         if std::env::var_os("P2FX_DEBUG").is_some() {
             let base = vm.get_prop(a, "Base").and_then(|v| v.as_obj()).map(|b| vm.object_name(b));
@@ -416,7 +419,9 @@ impl FxWorld {
                 let n = v(0);
                 vm.set_prop(o, "ProjectionNormal", Value::Vector(n.to_array()));
                 if let Some((a, i)) = self.find_sub(vm, o) {
-                    self.systems.get_mut(&a)?.defs[i].projection_normal = n.normalize_or_zero().to_array();
+                    let fx = self.systems.get_mut(&a)?;
+                    fx.defs[i].projection_normal = n.normalize_or_zero().to_array();
+                    fx.reread(i);
                 }
                 Value::Void
             }
@@ -428,6 +433,7 @@ impl FxWorld {
                     let fx = self.systems.get_mut(&a)?;
                     fx.state.set_max_particles(&mut fx.defs, i, n);
                     fx.seen[i].max_particles = n;
+                    fx.reread(i);
                 }
                 Value::Void
             }
@@ -452,6 +458,7 @@ impl FxWorld {
                     st.spawn_length(def, &mut fx.state.rng, &owner, num, s, e, size.max(0.5));
                     fx.state.finished = false;
                     fx.push_runtime(vm);
+                    fx.reread(i);
                 }
                 Value::Void
             }
@@ -762,10 +769,19 @@ fn read_script_fields_with<'v>(g: &mut dyn FnMut(&'static str) -> Option<&'v Val
 
 impl VmFx {
     /// Copies script edits made since the last frame into the definitions and runtime state.
+    /// Call after changing `defs[i]` directly: the next pull must read the script's values again
+    /// even though script wrote nothing (they replace what was changed here).
+    fn reread(&mut self, i: usize) {
+        if let Some(s) = self.synced.get_mut(i) {
+            *s = None;
+        }
+    }
+
     fn pull_script_edits(&mut self, vm: &Vm) {
         for (i, o) in self.objs.iter().enumerate() {
             let Some(o) = *o else { continue };
-            if vm.objects.get(o).is_none() {
+            let Some(object) = vm.objects.get(o) else { continue };
+            if self.synced.get(i).copied().flatten() == Some(object.slots.generation()) {
                 continue;
             }
             let before = self.seen[i].clone();
@@ -819,6 +835,8 @@ impl VmFx {
                 vm.set_prop(o, "LineEnd", Value::Vector(d.line_end));
             }
             self.seen[i] = mirror_of(d);
+            self.synced.resize(self.objs.len(), None);
+            self.synced[i] = vm.objects.get(o).map(|x| x.slots.generation());
         }
     }
 

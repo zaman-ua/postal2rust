@@ -27,6 +27,7 @@
 use crate::notify::Notify;
 use glam::{Mat3, Mat4, Quat, Vec3};
 use std::collections::HashMap;
+use uscript::vm::FastMap;
 use std::sync::Arc;
 use upkg::skeletal::{MeshAnimation, SkeletalMesh};
 
@@ -385,7 +386,7 @@ pub struct AnimInstance {
     loc_ctrl: HashMap<usize, BoneLoc>,
     /// Scale slot -> (bone, scale).
     scale_slots: HashMap<i32, (usize, f32)>,
-    attachments: HashMap<u64, Attachment>,
+    attachments: FastMap<u64, Attachment>,
     root_lock: i32,
     root_prev: Option<BoneTransform>,
     root_delta_pos: Vec3,
@@ -413,7 +414,7 @@ impl AnimInstance {
             rot_ctrl: HashMap::new(),
             loc_ctrl: HashMap::new(),
             scale_slots: HashMap::new(),
-            attachments: HashMap::new(),
+            attachments: Default::default(),
             root_lock: 0,
             root_prev: None,
             root_delta_pos: Vec3::ZERO,
