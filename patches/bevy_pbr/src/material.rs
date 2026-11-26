@@ -655,7 +655,7 @@ pub const fn tonemapping_pipeline_key(tonemapping: Tonemapping) -> MeshPipelineK
 /// The easiest way to ensure that
 /// [`crate::render::mesh::extract_meshes_for_gpu_building`] re-extracts a mesh
 /// is to mark its [`Mesh3d`] as changed, so that's what this system does.
-fn mark_meshes_as_changed_if_their_materials_changed<M>(
+pub fn mark_meshes_as_changed_if_their_materials_changed<M>(
     mut changed_meshes_query: Query<
         &mut Mesh3d,
         Or<(Changed<MeshMaterial3d<M>>, AssetChanged<MeshMaterial3d<M>>)>,

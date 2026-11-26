@@ -87,6 +87,13 @@ pub struct GlesPlugin;
 impl Plugin for GlesPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreUpdate, init_gles).add_systems(Last, (assets::track_assets, frame::draw_frame).chain());
+        app.add_systems(Startup, trim_bevy_systems);
+        if std::env::var_os("P2GAME_GLES_BEVY_FULL").is_none() && std::env::var("P2GAME_GLES_TRIM").is_ok_and(|t| t.split(',').any(|x| x == "visif")) {
+            // Per-view frustum culling: p2gles does its own. A run condition, not removal, so the
+            // order of the rest of PostUpdate stays exactly as Bevy built it.
+            use bevy::camera::visibility::VisibilitySystems;
+            app.configure_sets(PostUpdate, (VisibilitySystems::CheckVisibility, VisibilitySystems::MarkNewlyHiddenEntitiesInvisible).run_if(|| false));
+        }
     }
 }
 
@@ -110,4 +117,53 @@ fn init_gles(world: &mut World) {
         }
         None => {}
     }
+}
+
+/// Bevy's renderer is absent, but its main-world bookkeeping for it still runs every frame:
+/// per-view frustum culling (`ViewVisibility`, which p2gles does not read: it culls by itself) and
+/// marking `Mesh3d` changed when a mesh or material asset changes (for re-extraction and pipeline
+/// specialisation). Each of the latter scans every mesh entity with an `AssetChanged` filter. p2gles
+/// tracks assets through `AssetEvent`s instead ([`assets`]), so these are removed from `PostUpdate`.
+/// `P2GAME_GLES_BEVY_FULL=1` keeps them; `P2GAME_LIST_SYSTEMS=1` prints what `PostUpdate` runs.
+fn trim_bevy_systems(world: &mut World) {
+    use bevy::camera::visibility::VisibilitySystems;
+    use bevy::ecs::schedule::ScheduleCleanupPolicy::RemoveSystemsOnly;
+    use bevy::ecs::schedule::ScheduleLabel;
+    use bevy::pbr::{check_entities_needing_specialization as spec, mark_meshes_as_changed_if_their_materials_changed as mat, StandardMaterial};
+    if std::env::var_os("P2GAME_GLES_BEVY_FULL").is_some() {
+        return;
+    }
+    world.resource_scope(|world, mut schedules: Mut<Schedules>| {
+        let mut removed = 0;
+        let mut rm = |n: Result<usize, bevy::ecs::schedule::ScheduleError>| removed += n.unwrap_or(0);
+        let only = std::env::var("P2GAME_GLES_TRIM").unwrap_or_else(|_| "mat,spec".into());
+        let on = |k: &str| only.split(',').any(|x| x == k);
+        if on("vis") {
+            rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::CheckVisibility, world, RemoveSystemsOnly));
+            rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::MarkNewlyHiddenEntitiesInvisible, world, RemoveSystemsOnly));
+        }
+        if on("mesh") {
+            rm(schedules.remove_systems_in_set(PostUpdate, bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed, world, RemoveSystemsOnly));
+        }
+        macro_rules! material {
+            ($($m:ty),*) => {$(
+                if on("mat") { rm(schedules.remove_systems_in_set(PostUpdate, mat::<$m>, world, RemoveSystemsOnly)); }
+                if on("spec") { rm(schedules.remove_systems_in_set(PostUpdate, spec::<$m>, world, RemoveSystemsOnly)); }
+            )*};
+        }
+        material!(StandardMaterial, p2view::baked::BakedMaterial, p2view::outdoor::SplatMaterial, p2fx::ParticleMaterial);
+        println!("gles: removed {removed} of Bevy's render bookkeeping systems from PostUpdate");
+        if std::env::var_os("P2GAME_LIST_SYSTEMS").is_some() {
+            for label in [PreUpdate.intern(), Update.intern(), PostUpdate.intern(), Last.intern(), First.intern()] {
+                if let Some(s) = schedules.get_mut(label) {
+                    let _ = s.initialize(world);
+                    if let Ok(it) = s.systems() {
+                        for (_, sys) in it {
+                            println!("system {label:?}: {}", sys.name());
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
