@@ -1,19 +1,23 @@
 //! GPU copies of Bevy's mesh and image assets: uploaded on first use, dropped when the asset
 //! changes or goes away.
 
+use super::backend::{Cmd, Texture};
 use super::Gles;
 use bevy::asset::AssetEvent;
 use bevy::mesh::{Indices, MeshVertexAttribute, VertexAttributeValues};
 use bevy::prelude::*;
-use p2gles::dynamic::{MeshIn, TexIn};
+use p2gles::dynamic::{pack_mesh, MeshIn};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-/// GPU copies to rebuild on their next use.
+/// What the backend holds a GPU copy of.
 #[derive(Default)]
-pub(super) struct Stale {
+pub(super) struct Resident {
     meshes: HashSet<u64>,
     textures: HashSet<u64>,
+    /// Copies to rebuild on their next use.
+    stale_meshes: HashSet<u64>,
+    stale_textures: HashSet<u64>,
 }
 
 /// The key p2gles knows an asset by.
@@ -35,18 +39,18 @@ fn changed<T: Asset>(events: &mut MessageReader<AssetEvent<T>>, stale: &mut Hash
 /// Meshes/images changed or removed since last frame: their GPU copies re-upload on demand.
 pub(super) fn track_assets(g: Option<NonSendMut<Gles>>, mut meshes: MessageReader<AssetEvent<Mesh>>, mut images: MessageReader<AssetEvent<Image>>) {
     let Some(mut g) = g else { return };
-    changed(&mut meshes, &mut g.stale.meshes);
-    changed(&mut images, &mut g.stale.textures);
+    changed(&mut meshes, &mut g.assets.stale_meshes);
+    changed(&mut images, &mut g.assets.stale_textures);
 }
 
 impl Gles {
     /// Makes sure the mesh is on the GPU; false if it cannot be drawn.
     pub(super) fn upload_mesh(&mut self, id: AssetId<Mesh>, mesh: &Mesh) -> bool {
         let key = aid(id);
-        if self.dynamic.has_mesh(key) && !self.stale.meshes.contains(&key) {
+        if self.assets.meshes.contains(&key) && !self.assets.stale_meshes.contains(&key) {
             return true;
         }
-        self.stale.meshes.remove(&key);
+        self.assets.stale_meshes.remove(&key);
         let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false };
         let f3 = |a: MeshVertexAttribute| match mesh.attribute(a) {
             Some(VertexAttributeValues::Float32x3(v)) => Some(v.as_slice()),
@@ -79,8 +83,19 @@ impl Gles {
             None => (0..pos.len() as u32).collect(),
         };
         let m = MeshIn { pos, normal: f3(Mesh::ATTRIBUTE_NORMAL), uv0: f2(Mesh::ATTRIBUTE_UV_0), uv1: f2(Mesh::ATTRIBUTE_UV_1), color, joints, weights, indices: &indices };
-        self.dynamic.add_mesh(&self.gl, key, &m);
-        self.dynamic.has_mesh(key)
+        match pack_mesh(&m) {
+            Some(packed) => {
+                self.assets.meshes.insert(key);
+                self.link.send(Cmd::Mesh(key, packed));
+                true
+            }
+            None => {
+                if self.assets.meshes.remove(&key) {
+                    self.link.send(Cmd::RemoveMesh(key));
+                }
+                false
+            }
+        }
     }
 
     /// Makes sure the image is on the GPU; false if its format or data cannot be used.
@@ -88,10 +103,10 @@ impl Gles {
         use bevy::render::render_resource::TextureFormat as F;
         use p2view::scene::PixelFormat as P;
         let key = aid(id);
-        if self.dynamic.has_tex(key) && !self.stale.textures.contains(&key) {
+        if self.assets.textures.contains(&key) && !self.assets.stale_textures.contains(&key) {
             return true;
         }
-        self.stale.textures.remove(&key);
+        self.assets.stale_textures.remove(&key);
         let Some(data) = img.data.as_ref() else { return false };
         let (format, block) = match img.texture_descriptor.format {
             F::Rgba8Unorm | F::Rgba8UnormSrgb => (P::Rgba8, 0usize),
@@ -101,27 +116,33 @@ impl Gles {
             _ => return false,
         };
         let (width, height) = (img.width(), img.height());
-        let mut mips: Vec<&[u8]> = Vec::new();
+        let mut mips: Vec<Vec<u8>> = Vec::new();
         let mut off = 0usize;
         for level in 0..img.texture_descriptor.mip_level_count.max(1) {
             let (w, h) = ((width >> level).max(1) as usize, (height >> level).max(1) as usize);
             let len = if block == 0 { w * h * 4 } else { w.div_ceil(4) * h.div_ceil(4) * block };
             let Some(mip) = data.get(off..off + len) else { break };
-            mips.push(mip);
+            mips.push(mip.to_vec());
             off += len;
         }
         let repeat = match &img.sampler {
             bevy::image::ImageSampler::Descriptor(d) => !matches!(d.address_mode_u, bevy::image::ImageAddressMode::ClampToEdge),
             _ => true,
         };
-        self.dynamic.add_tex(&self.gl, key, &TexIn { width, height, format, mips, repeat });
-        self.dynamic.has_tex(key)
+        if mips.is_empty() || width == 0 || height == 0 {
+            return false;
+        }
+        self.assets.textures.insert(key);
+        self.link.send(Cmd::Texture(key, Texture { width, height, format, mips, repeat }));
+        true
     }
 
     /// Frees GPU copies of assets that no longer exist.
     pub(super) fn drop_dead_assets(&mut self, meshes: &Assets<Mesh>, images: &Assets<Image>) {
         let meshes: HashSet<u64> = meshes.ids().map(aid).collect();
         let images: HashSet<u64> = images.ids().map(aid).collect();
-        self.dynamic.retain(&self.gl, &meshes, &images);
+        self.assets.meshes.retain(|k| meshes.contains(k));
+        self.assets.textures.retain(|k| images.contains(k));
+        self.link.send(Cmd::Retain(meshes, images));
     }
 }

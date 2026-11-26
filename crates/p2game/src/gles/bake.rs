@@ -93,7 +93,7 @@ pub(crate) fn bake_world(mut sim: NonSendMut<Sim>, pending: Option<NonSendMut<Op
             stay_baked.extend(entities.iter().copied());
         }
     }
-    gles.load_world(&level.data, skip);
     sim.stop_driving(&stay_baked);
+    gles.load_world(level.data, skip);
     println!("gles: {} static mesh entities baked, {dynamic} stay dynamic", stay_baked.len());
 }

@@ -33,6 +33,41 @@ pub struct TexIn<'a> {
     pub repeat: bool,
 }
 
+/// A mesh in the GPU's vertex layout, ready to upload from whichever thread owns the context.
+pub struct PackedMesh {
+    vertices: Vec<u8>,
+    indices: Vec<u8>,
+    count: i32,
+}
+
+/// Interleaves a mesh into the layout of `DYN_VS` (no GL calls); `None` if there is nothing to draw.
+pub fn pack_mesh(m: &MeshIn) -> Option<PackedMesh> {
+    let n = m.pos.len();
+    if n == 0 || m.indices.is_empty() {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(n * STRIDE);
+    let f = |buf: &mut Vec<u8>, v: &[f32]| {
+        for x in v {
+            buf.extend_from_slice(&x.to_ne_bytes());
+        }
+    };
+    for i in 0..n {
+        f(&mut buf, &m.pos[i]);
+        f(&mut buf, &m.normal.and_then(|a| a.get(i).copied()).unwrap_or([0.0, 1.0, 0.0]));
+        f(&mut buf, &m.uv0.and_then(|a| a.get(i).copied()).unwrap_or([0.0; 2]));
+        f(&mut buf, &m.uv1.and_then(|a| a.get(i).copied()).unwrap_or([0.0; 2]));
+        f(&mut buf, &m.color.and_then(|a| a.get(i).copied()).unwrap_or([1.0; 4]));
+        f(&mut buf, &m.weights.and_then(|a| a.get(i).copied()).unwrap_or([1.0, 0.0, 0.0, 0.0]));
+        for j in m.joints.and_then(|a| a.get(i).copied()).unwrap_or([0; 4]) {
+            buf.extend_from_slice(&j.min(MAX_JOINTS as u16 - 1).to_ne_bytes());
+        }
+    }
+    debug_assert_eq!(buf.len(), n * STRIDE);
+    let indices = m.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
+    Some(PackedMesh { vertices: buf, indices, count: m.indices.len() as i32 })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Blend {
     Opaque,
@@ -208,22 +243,24 @@ fn compile(gl: &glow::Context, masked: bool) -> Prog {
 
 /// A new vertex array in the layout of `DYN_VS`; leaves it bound.
 unsafe fn new_mesh(gl: &glow::Context, vertices: &[u8], indices: &[u8], count: i32) -> GpuMesh {
-    let vao = gl.create_vertex_array().unwrap();
-    gl.bind_vertex_array(Some(vao));
-    let vbo = gl.create_buffer().unwrap();
-    gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices, glow::STATIC_DRAW);
-    let stride = STRIDE as i32;
-    for (loc, size, off) in [(0u32, 3, 0), (1, 3, 12), (2, 2, 24), (3, 2, 32), (4, 4, 40), (5, 4, 56)] {
-        gl.enable_vertex_attrib_array(loc);
-        gl.vertex_attrib_pointer_f32(loc, size, glow::FLOAT, false, stride, off);
+    unsafe {
+        let vao = gl.create_vertex_array().unwrap();
+        gl.bind_vertex_array(Some(vao));
+        let vbo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices, glow::STATIC_DRAW);
+        let stride = STRIDE as i32;
+        for (loc, size, off) in [(0u32, 3, 0), (1, 3, 12), (2, 2, 24), (3, 2, 32), (4, 4, 40), (5, 4, 56)] {
+            gl.enable_vertex_attrib_array(loc);
+            gl.vertex_attrib_pointer_f32(loc, size, glow::FLOAT, false, stride, off);
+        }
+        gl.enable_vertex_attrib_array(6);
+        gl.vertex_attrib_pointer_i32(6, 4, glow::UNSIGNED_SHORT, stride, 72);
+        let ibo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+        gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, indices, glow::STATIC_DRAW);
+        GpuMesh { vao, vbo, ibo, count, instanced: Cell::new(false) }
     }
-    gl.enable_vertex_attrib_array(6);
-    gl.vertex_attrib_pointer_i32(6, 4, glow::UNSIGNED_SHORT, stride, 72);
-    let ibo = gl.create_buffer().unwrap();
-    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-    gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, indices, glow::STATIC_DRAW);
-    GpuMesh { vao, vbo, ibo, count, instanced: Cell::new(false) }
 }
 
 impl Dynamic {
@@ -252,44 +289,26 @@ impl Dynamic {
         self.textures.contains_key(&id)
     }
 
+    pub fn add_mesh(&mut self, gl: &glow::Context, id: u64, m: &MeshIn) {
+        match pack_mesh(m) {
+            Some(packed) => self.add_packed(gl, id, &packed),
+            None => self.remove_mesh(gl, id),
+        }
+    }
+
     /// Uploads a mesh, or replaces the contents of the one already known by `id`. HUD and particle
     /// meshes change every frame, so their GL objects are kept and only the data is sent again.
-    pub fn add_mesh(&mut self, gl: &glow::Context, id: u64, m: &MeshIn) {
-        let n = m.pos.len();
-        if n == 0 || m.indices.is_empty() {
-            self.remove_mesh(gl, id);
-            return;
-        }
-        let mut buf = Vec::with_capacity(n * STRIDE);
-        let f = |buf: &mut Vec<u8>, v: &[f32]| {
-            for x in v {
-                buf.extend_from_slice(&x.to_ne_bytes());
-            }
-        };
-        for i in 0..n {
-            f(&mut buf, &m.pos[i]);
-            f(&mut buf, &m.normal.and_then(|a| a.get(i).copied()).unwrap_or([0.0, 1.0, 0.0]));
-            f(&mut buf, &m.uv0.and_then(|a| a.get(i).copied()).unwrap_or([0.0; 2]));
-            f(&mut buf, &m.uv1.and_then(|a| a.get(i).copied()).unwrap_or([0.0; 2]));
-            f(&mut buf, &m.color.and_then(|a| a.get(i).copied()).unwrap_or([1.0; 4]));
-            f(&mut buf, &m.weights.and_then(|a| a.get(i).copied()).unwrap_or([1.0, 0.0, 0.0, 0.0]));
-            for j in m.joints.and_then(|a| a.get(i).copied()).unwrap_or([0; 4]) {
-                buf.extend_from_slice(&j.min(MAX_JOINTS as u16 - 1).to_ne_bytes());
-            }
-        }
-        debug_assert_eq!(buf.len(), n * STRIDE);
-        let indices: Vec<u8> = m.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
-        let count = m.indices.len() as i32;
+    pub fn add_packed(&mut self, gl: &glow::Context, id: u64, packed: &PackedMesh) {
         unsafe {
             if let Some(mesh) = self.meshes.get_mut(&id) {
                 // Changed once: expect it to keep changing.
                 gl.bind_vertex_array(Some(mesh.vao));
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(mesh.vbo));
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &buf, glow::DYNAMIC_DRAW);
-                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &indices, glow::DYNAMIC_DRAW);
-                mesh.count = count;
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &packed.vertices, glow::DYNAMIC_DRAW);
+                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, &packed.indices, glow::DYNAMIC_DRAW);
+                mesh.count = packed.count;
             } else {
-                let mesh = new_mesh(gl, &buf, &indices, count);
+                let mesh = new_mesh(gl, &packed.vertices, &packed.indices, packed.count);
                 self.meshes.insert(id, mesh);
             }
             gl.bind_vertex_array(None);

@@ -316,9 +316,15 @@ impl SceneMeshes<'_, '_> {
 pub(super) struct Hud<'w, 's> {
     batches: Query<'w, 's, (&'static Mesh2d, &'static MeshMaterial2d<CanvasMaterial>, &'static GlobalTransform, &'static InheritedVisibility)>,
     materials: Res<'w, Assets<CanvasMaterial>>,
+    canvas: Res<'w, p2canvas::HudCanvas>,
 }
 
 impl Hud<'_, '_> {
+    /// The size of the canvas the batches are laid out on.
+    pub fn size(&self) -> (u32, u32) {
+        (self.canvas.0.size_x.max(1) as u32, self.canvas.0.size_y.max(1) as u32)
+    }
+
     /// The batches in painter's order (z).
     pub fn collect(&self, gles: &mut Gles, meshes: &Assets<Mesh>, images: &Assets<Image>) -> Vec<CanvasDraw> {
         let mut batches: Vec<(f32, &Mesh2d, &CanvasMaterial)> = self.batches.iter().filter(|(.., visible)| visible.get()).filter_map(|(mesh, material, transform, _)| self.materials.get(&material.0).map(|m| (transform.translation().z, mesh, m))).collect();
