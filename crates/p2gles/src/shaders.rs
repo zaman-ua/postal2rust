@@ -39,6 +39,11 @@ in vec2 vUv2;
 in vec3 vCol;
 in float vDist;
 out vec4 oColor;
+// Fog mixes in linear light, as Bevy and the game do; gamma 2.0 stands in for 2.2 (cheap on Mali).
+// Mixed in display space, distant dark surfaces turned black (the menu's gut-textured walls).
+vec3 fogged(vec3 c, vec3 fog, float f) {
+    return f > 0.0 ? sqrt(mix(c * c, fog * fog, f)) : c;
+}
 void main() {
     vec4 t = texture(uTex, vUv);
     if (uForceOpaque) t.a = 1.0;
@@ -57,7 +62,7 @@ void main() {
     if (uUseAlphaMap) a *= texture(uAlphaMap, vUv2).r;
     vec3 c = min(t.rgb * light, vec3(1.0));
     float f = clamp((vDist - uFog.x) / max(uFog.y - uFog.x, 1.0), 0.0, 1.0);
-    c = mix(c, uFogColor, f);
+    c = fogged(c, uFogColor, f);
     oColor = vec4(c, a);
 }
 "#;
@@ -129,6 +134,11 @@ in vec4 vCol;
 in vec3 vNrm;
 in float vDist;
 out vec4 oColor;
+// Fog mixes in linear light, as Bevy and the game do; gamma 2.0 stands in for 2.2 (cheap on Mali).
+// Mixed in display space, distant dark surfaces turned black (the menu's gut-textured walls).
+vec3 fogged(vec3 c, vec3 fog, float f) {
+    return f > 0.0 ? sqrt(mix(c * c, fog * fog, f)) : c;
+}
 void main() {
     vec4 t = texture(uTex, vUv) * uColor;
 #ifdef ALPHA_TEST
@@ -146,7 +156,7 @@ void main() {
     }
     vec3 c = min(t.rgb * light, vec3(1.0));
     float f = clamp((vDist - uFog.x) / max(uFog.y - uFog.x, 1.0), 0.0, 1.0) * uFogMix;
-    c = mix(c, uFogColor, f);
+    c = fogged(c, uFogColor, f);
     oColor = vec4(c, t.a);
 }
 "#;

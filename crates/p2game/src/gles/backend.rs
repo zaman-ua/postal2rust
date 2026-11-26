@@ -21,6 +21,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Fog ending nearer than this (metres) hides what is behind it; `zone_fog` pushes the end past any
+/// map (10 km) in zones without fog.
+const FOG_HIDES_BELOW: f32 = 5000.0;
+
 /// A texture's data, owned so it can cross to the render thread.
 pub(super) struct Texture {
     pub width: u32,
@@ -193,7 +197,9 @@ impl Backend {
         for cam in cameras {
             unsafe {
                 self.gl.depth_mask(true);
-                match cam.clear {
+                // Chunks wholly beyond the fog are not drawn: what shows there must be fog colour.
+                let behind_world = cam.fog.filter(|&(_, end, _)| cam.world && end < FOG_HIDES_BELOW).map(|(_, _, color)| color);
+                match cam.clear.map(|c| behind_world.unwrap_or(c)) {
                     Some([r, g, b]) => {
                         self.gl.clear_color(r, g, b, 1.0);
                         self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);

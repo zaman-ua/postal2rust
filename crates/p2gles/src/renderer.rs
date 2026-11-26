@@ -644,14 +644,110 @@ impl Renderer {
 /// Splits `m`'s triangles into cells by centroid (x, z), remapping vertices per cell.
 fn bake_split(b: &mut Baker, key: Key, m: &MeshData, vert: impl Fn(usize) -> V) {
     let mut remap: HashMap<(i32, i32), HashMap<u32, u32>> = HashMap::new();
+    let mut pieces = Vec::new();
     for tri in m.indices.chunks_exact(3) {
         let p = |i: u32| Vec3::from(m.positions[i as usize]);
-        let c = (p(tri[0]) + p(tri[1]) + p(tri[2])) / 3.0;
-        let (ch, cell) = b.chunk(key, c.x, c.z);
-        let rm = remap.entry(cell).or_default();
-        for &v in tri {
-            let n = *rm.entry(v).or_insert_with(|| push_vert(ch, vert(v as usize)));
-            ch.idx.push(n);
+        if !is_large([p(tri[0]), p(tri[1]), p(tri[2])]) {
+            let c = (p(tri[0]) + p(tri[1]) + p(tri[2])) / 3.0;
+            let (ch, cell) = b.chunk(key, c.x, c.z);
+            let rm = remap.entry(cell).or_default();
+            for &v in tri {
+                let n = *rm.entry(v).or_insert_with(|| push_vert(ch, vert(v as usize)));
+                ch.idx.push(n);
+            }
+            continue;
+        }
+        pieces.clear();
+        subdivide([vert(tri[0] as usize), vert(tri[1] as usize), vert(tri[2] as usize)], &mut pieces);
+        for piece in &pieces {
+            let c = piece.iter().fold(Vec3::ZERO, |sum, v| sum + Vec3::from(v.pos)) / 3.0;
+            let (ch, _) = b.chunk(key, c.x, c.z);
+            for &v in piece {
+                let n = push_vert(ch, v);
+                ch.idx.push(n);
+            }
+        }
+    }
+}
+
+/// Longest triangle edge (metres) in the baked world. Fog is computed per vertex, so a huge triangle
+/// takes its far corners' fog all over: the main menu's shaft (12 triangles, 625 m tall) was black.
+const MAX_EDGE: f32 = 16.0;
+
+fn long_edge(a: Vec3, b: Vec3) -> bool {
+    a.distance_squared(b) > MAX_EDGE * MAX_EDGE
+}
+
+fn is_large([a, b, c]: [Vec3; 3]) -> bool {
+    long_edge(a, b) || long_edge(b, c) || long_edge(c, a)
+}
+
+fn midpoint(a: V, b: V) -> V {
+    let half = |x: f32, y: f32| (x + y) * 0.5;
+    V {
+        pos: std::array::from_fn(|i| half(a.pos[i], b.pos[i])),
+        uv: std::array::from_fn(|i| half(a.uv[i], b.uv[i])),
+        uv2: std::array::from_fn(|i| half(a.uv2[i], b.uv2[i])),
+        col: std::array::from_fn(|i| ((a.col[i] as u16 + b.col[i] as u16 + 1) / 2) as u8),
+    }
+}
+
+/// Cuts a triangle until no edge is long, keeping its winding. Whether an edge is cut, and where,
+/// depends only on its two ends, so triangles sharing an edge still meet without cracks.
+fn subdivide(t: [V; 3], out: &mut Vec<[V; 3]>) {
+    let long: [bool; 3] = std::array::from_fn(|i| long_edge(Vec3::from(t[i].pos), Vec3::from(t[(i + 1) % 3].pos)));
+    // Rotated so that the cut edges come first: (a, b), then (b, c).
+    let turn = |i: usize| [t[i], t[(i + 1) % 3], t[(i + 2) % 3]];
+    match long.iter().filter(|&&l| l).count() {
+        0 => out.push(t),
+        1 => {
+            let [a, b, c] = turn(long.iter().position(|&l| l).unwrap());
+            let ab = midpoint(a, b);
+            subdivide([a, ab, c], out);
+            subdivide([ab, b, c], out);
+        }
+        2 => {
+            let [a, b, c] = turn((0..3).find(|&i| long[i] && long[(i + 1) % 3]).unwrap());
+            let (ab, bc) = (midpoint(a, b), midpoint(b, c));
+            subdivide([ab, b, bc], out);
+            subdivide([a, ab, bc], out);
+            subdivide([a, bc, c], out);
+        }
+        _ => {
+            let [a, b, c] = t;
+            let (ab, bc, ca) = (midpoint(a, b), midpoint(b, c), midpoint(c, a));
+            for piece in [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]] {
+                subdivide(piece, out);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(x: f32, z: f32) -> V {
+        V { pos: [x, 0.0, z], uv: [x, z], uv2: [0.0; 2], col: [0, 0, 0, 255] }
+    }
+
+    fn area2(t: &[V; 3]) -> f32 {
+        let p = |i: usize| Vec3::from(t[i].pos);
+        (p(1) - p(0)).cross(p(2) - p(0)).y
+    }
+
+    #[test]
+    fn large_triangles_are_cut_into_small_ones_of_the_same_total_area_and_winding() {
+        // Long thin, right-angled and nearly equilateral triangles.
+        for t in [[v(0.0, 0.0), v(625.0, 0.0), v(0.0, 3.0)], [v(0.0, 0.0), v(156.0, 0.0), v(0.0, 156.0)], [v(0.0, 0.0), v(40.0, 0.0), v(20.0, 35.0)]] {
+            let mut out = Vec::new();
+            subdivide(t, &mut out);
+            assert!(out.iter().all(|p| !is_large([0, 1, 2].map(|i| Vec3::from(p[i].pos)))));
+            assert!(out.iter().all(|p| area2(p) * area2(&t) > 0.0), "winding");
+            let total: f32 = out.iter().map(area2).sum();
+            assert!((total - area2(&t)).abs() <= area2(&t).abs() * 1e-4, "area {total} {}", area2(&t));
+            // Texture coordinates follow the positions.
+            assert!(out.iter().flatten().all(|q| (q.uv[0] - q.pos[0]).abs() < 1e-3 && (q.uv[1] - q.pos[2]).abs() < 1e-3));
         }
     }
 }
