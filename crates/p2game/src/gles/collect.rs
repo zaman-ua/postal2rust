@@ -1,7 +1,8 @@
 //! Reads one frame out of the ECS into p2gles draw lists.
 
 use super::assets::aid;
-use super::bake::GlBaked;
+use super::bake::GlStatic;
+use super::view::{fog_end, View};
 use super::Gles;
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::{InheritedVisibility, NoFrustumCulling, RenderLayers, VisibilityRange};
@@ -24,19 +25,13 @@ pub(super) struct Cam {
     /// Colour to clear to; `None` keeps the previous camera's picture (depth is always cleared).
     pub clear: Option<Color>,
     pub fog: Option<(f32, f32, [f32; 3])>,
-    /// World-space frustum planes.
-    planes: [Vec4; 6],
+    view: View,
 }
 
 impl Cam {
     /// The baked world belongs to the default layer's camera.
     pub fn draws_world(&self) -> bool {
         self.layers.intersects(&RenderLayers::layer(0))
-    }
-
-    /// Whether a bounding sphere is beyond the fog or outside the frustum.
-    fn culls(&self, center: Vec3, radius: f32, dist: f32) -> bool {
-        self.fog.is_some_and(|(_, end, _)| dist - radius > end * 1.05) || self.planes.iter().any(|p| p.truncate().dot(center) + p.w < -radius * p.truncate().length())
     }
 }
 
@@ -91,10 +86,8 @@ impl Cameras<'_, '_> {
                 if !camera.is_active {
                     return None;
                 }
-                let near = p.near.max(0.05);
-                let view_proj = Mat4::perspective_rh_gl(p.fov, p.aspect_ratio, near, p.far.max(near + 1.0)) * transform.to_matrix().inverse();
-                let row = |i: usize| Vec4::new(view_proj.x_axis[i], view_proj.y_axis[i], view_proj.z_axis[i], view_proj.w_axis[i]);
-                let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+                let view_proj = View::projection(p, transform.to_matrix());
+                let view = View::new(view_proj, transform.translation(), fog_end(fog));
                 let clear = match camera.clear_color {
                     ClearColorConfig::Default => Some(default_clear),
                     ClearColorConfig::Custom(color) => Some(color),
@@ -107,7 +100,7 @@ impl Cameras<'_, '_> {
                     }
                     _ => None,
                 });
-                Some(Cam { order: camera.order, view_proj, pos: transform.translation(), layers: layers.cloned().unwrap_or_default(), clear, fog, planes: [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2] })
+                Some(Cam { order: camera.order, view_proj, pos: transform.translation(), layers: layers.cloned().unwrap_or_default(), clear, fog, view })
             })
             .collect();
         cams.sort_by_key(|c| c.order);
@@ -129,6 +122,7 @@ impl Cameras<'_, '_> {
 
 #[derive(SystemParam)]
 pub(super) struct SceneMeshes<'w, 's> {
+    /// Mesh entities outside the baked world.
     entities: Query<
         'w,
         's,
@@ -145,10 +139,10 @@ pub(super) struct SceneMeshes<'w, 's> {
             Has<NoFrustumCulling>,
             Option<&'static VisibilityRange>,
         ),
+        Without<GlStatic>,
     >,
     particles: Query<'w, 's, (&'static Mesh3d, &'static MeshMaterial3d<p2fx::ParticleMaterial>, &'static InheritedVisibility, Option<&'static RenderLayers>)>,
     joints: Query<'w, 's, &'static GlobalTransform>,
-    baked: Res<'w, GlBaked>,
     materials: Res<'w, Assets<StandardMaterial>>,
     baked_materials: Res<'w, Assets<p2view::baked::BakedMaterial>>,
     particle_materials: Res<'w, Assets<p2fx::ParticleMaterial>>,
@@ -199,7 +193,7 @@ impl SceneMeshes<'_, '_> {
     pub fn collect_meshes(&self, cams: &[Cam], gles: &mut Gles, meshes: &Assets<Mesh>, images: &Assets<Image>, passes: &mut [Pass]) {
         let mut skeletons = Skeletons::new();
         for (entity, mesh3d, transform, visible, layers, skin, standard, baked_material, aabb, no_culling, range) in &self.entities {
-            if !visible.get() || self.baked.0.contains(&entity) {
+            if !visible.get() {
                 continue;
             }
             let Some(mesh) = meshes.get(&mesh3d.0) else { continue };
@@ -242,7 +236,7 @@ impl SceneMeshes<'_, '_> {
                     continue;
                 }
                 let dist = (center - cam.pos).length();
-                if range.is_some_and(|r| dist > r.end_margin.end) || (cullable && cam.culls(center, radius, dist)) {
+                if range.is_some_and(|r| dist > r.end_margin.end) || (cullable && !cam.view.sees(center, radius)) {
                     continue;
                 }
                 seen = true;

@@ -299,7 +299,7 @@ pub fn run(cfg: BootConfig, args: Args) {
         .add_systems(
             Update,
             (
-                (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::gles::bake_world, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, pose_rigs, crate::ui::hide_own_body, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override).chain(),
+                (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::gles::bake_world, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override, pose_rigs, crate::ui::hide_own_body).chain(),
                 (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide).chain(),
             )
                 .chain(),
@@ -1010,11 +1010,31 @@ fn frame_npc(args: Res<WinArgs>, sim: NonSend<Sim>, mut done: Local<bool>, mut c
 fn pose_rigs(
     sim: NonSend<Sim>,
     rigs: Query<&crate::rigs::VmRig>,
-    mut tfs: Query<&mut Transform, Without<crate::rigs::VmRig>>,
+    mut tfs: ParamSet<(Query<&mut Transform, Without<crate::rigs::VmRig>>, Query<(&Transform, &Projection, &Camera, Option<&bevy::camera::visibility::RenderLayers>, Option<&DistanceFog>), With<Camera3d>>)>,
     mut vis: Query<&mut Visibility, Without<crate::rigs::VmRig>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let _t = SysTimer::new("pose_rigs");
-    crate::rigs::pose_rigs(&sim.game.host, &sim.game.world.vm, &rigs, &mut tfs, &mut vis);
+    // Bevy copies the window's shape into the projections after Update: on a level's first frame
+    // (or just after a resize) theirs can still be narrower than what gets drawn.
+    let window_aspect = windows.single().map_or(0.0, |w| w.width() / w.height().max(1.0));
+    // p2gles draws only what the cameras see, so only that needs posing (this runs after the
+    // cameras have moved). `P2GAME_NO_POSE_CULL=1` poses everything.
+    let culling = crate::gles::enabled() && std::env::var_os("P2GAME_NO_POSE_CULL").is_none();
+    let views: Option<Vec<crate::gles::View>> = culling.then(|| {
+        tfs.p1()
+            .iter()
+            // Rigs live on the default layer.
+            .filter(|(_, _, camera, layers, _)| camera.is_active && layers.is_none_or(|l| l.intersects(&bevy::camera::visibility::RenderLayers::layer(0))))
+            .filter_map(|(transform, projection, _, _, fog)| {
+                let Projection::Perspective(p) = projection else { return None };
+                let p = PerspectiveProjection { aspect_ratio: p.aspect_ratio.max(window_aspect), ..p.clone() };
+                // Camera entities are roots: their Transform is already this frame's placement.
+                Some(crate::gles::View::new(crate::gles::View::projection(&p, transform.to_matrix()), transform.translation, crate::gles::fog_end(fog)))
+            })
+            .collect()
+    });
+    crate::rigs::pose_rigs(&sim.game.host, &sim.game.world.vm, views.as_deref().filter(|v| !v.is_empty()), &rigs, &mut tfs.p0(), &mut vis);
 }
 
 thread_local! {

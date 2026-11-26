@@ -11,7 +11,8 @@
 //! - [`collect`]: the ECS read into p2gles draw lists (cameras, meshes, particles, canvas);
 //! - [`assets`]: which Bevy meshes and images have GPU copies;
 //! - [`frame`]: the per-frame system that ties them together;
-//! - [`backend`]: the GL side; [`scaled`]: lower-resolution 3D.
+//! - [`backend`]: the GL side; [`scaled`]: lower-resolution 3D;
+//! - [`view`]: what a camera sees.
 
 mod assets;
 mod backend;
@@ -19,8 +20,10 @@ mod bake;
 mod collect;
 mod frame;
 mod scaled;
+mod view;
 
 pub(crate) use bake::{bake_world, classify_baked, queue_bake, LevelBake};
+pub(crate) use view::{fog_end, View};
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -32,6 +35,7 @@ use p2view::scene::SceneData;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::collections::HashSet;
 use std::num::NonZeroU32;
+
 
 pub fn enabled() -> bool {
     std::env::var_os("P2GAME_GLES").is_some_and(|v| v != "0")
@@ -82,7 +86,7 @@ pub struct GlesPlugin;
 
 impl Plugin for GlesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<bake::GlBaked>().add_systems(PreUpdate, init_gles).add_systems(Last, (assets::track_assets, frame::draw_frame).chain());
+        app.add_systems(PreUpdate, init_gles).add_systems(Last, (assets::track_assets, frame::draw_frame).chain());
     }
 }
 

@@ -104,6 +104,7 @@ pub struct Skeleton {
     pub ref_pose: Vec<BoneTransform>,
     /// Mesh space to actor space (LodMesh rotation, scale and origin).
     pub mesh_xform: Mat4,
+    reach: std::sync::OnceLock<f32>,
 }
 
 /// Converts a stored bone quaternion to its true rotation. The root is used as stored; every
@@ -115,7 +116,7 @@ pub fn stored_quat(bone: usize, q: [f32; 4]) -> Quat {
 
 impl Skeleton {
     pub fn new(names: Vec<String>, parents: Vec<usize>, ref_pose: Vec<BoneTransform>, mesh_xform: Mat4) -> Self {
-        Self { names, parents, ref_pose, mesh_xform }
+        Self { names, parents, ref_pose, mesh_xform, reach: Default::default() }
     }
 
     pub fn from_mesh(mesh: &SkeletalMesh) -> Self {
@@ -125,7 +126,22 @@ impl Skeleton {
             parents: mesh.bones.iter().map(|b| b.parent as usize).collect(),
             ref_pose: mesh.bones.iter().enumerate().map(|(i, b)| BoneTransform { rot: stored_quat(i, b.rotation), pos: Vec3::from(b.position) }).collect(),
             mesh_xform,
+            reach: Default::default(),
         }
+    }
+
+    /// How far the reference pose reaches from the actor's origin, in actor-space units.
+    pub fn reach(&self) -> f32 {
+        *self.reach.get_or_init(|| self.compute_reach())
+    }
+
+    fn compute_reach(&self) -> f32 {
+        let mut world: Vec<Mat4> = Vec::with_capacity(self.len());
+        for (b, local) in self.ref_pose.iter().enumerate() {
+            let parent = self.parents[b];
+            world.push(if b == 0 || parent == b { local.mat() } else { world[parent] * local.mat() });
+        }
+        world.iter().map(|m| (self.mesh_xform * *m).w_axis.truncate().length()).fold(0.0, f32::max)
     }
 
     pub fn len(&self) -> usize {

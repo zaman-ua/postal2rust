@@ -13,10 +13,10 @@ use p2view::scene::SceneData;
 use std::collections::{HashMap, HashSet};
 use uscript::vm::ObjId;
 
-/// Entities whose geometry is (or is about to be, until [`bake_world`] runs) in the world buffers:
-/// the generic pass skips them.
-#[derive(Resource, Default)]
-pub(crate) struct GlBaked(pub(super) HashSet<Entity>);
+/// Marks an entity whose geometry is (or is about to be, until [`bake_world`] runs) in the world
+/// buffers: the generic pass does not even visit it.
+#[derive(Component)]
+pub(crate) struct GlStatic;
 
 /// What a level load hands over for baking.
 pub(crate) struct LevelBake {
@@ -48,8 +48,9 @@ pub(crate) fn queue_bake(commands: &mut Commands, level: LevelBake) {
 /// Runs right after `load_scene` in the Update chain, before anything else spawns meshes. Candidates:
 /// BSP, terrain layers and static mesh instances on the default layer. Not candidates: movers, the
 /// sky zone (own layer) and terrain decorations (distance-ranged entities that are no map actor).
-pub(crate) fn classify_baked(pending: Option<NonSendMut<Option<PendingBake>>>, meshes: Query<(Entity, Option<&RenderLayers>, Has<VisibilityRange>), With<Mesh3d>>, baked: Option<ResMut<GlBaked>>) {
-    let (Some(mut pending), Some(mut baked)) = (pending, baked) else { return };
+pub(crate) fn classify_baked(mut commands: Commands, pending: Option<NonSendMut<Option<PendingBake>>>, meshes: Query<(Entity, Option<&RenderLayers>, Has<VisibilityRange>), With<Mesh3d>>) {
+    // A bake is only ever queued with P2GAME_GLES=1.
+    let Some(mut pending) = pending else { return };
     let Some(p) = pending.as_mut() else { return };
     if std::mem::replace(&mut p.classified, true) {
         return;
@@ -57,11 +58,11 @@ pub(crate) fn classify_baked(pending: Option<NonSendMut<Option<PendingBake>>>, m
     let level = &p.level;
     let statics: HashSet<Entity> = level.actors.values().flatten().copied().collect();
     let movers: HashSet<Entity> = level.actors.iter().filter(|(export, _)| level.movers.contains(export)).flat_map(|(_, e)| e.iter().copied()).collect();
-    baked.0 = meshes
-        .iter()
-        .filter(|(e, layers, ranged)| !level.before.contains(e) && !movers.contains(e) && layers.is_none_or(|l| l.intersects(&RenderLayers::layer(0))) && (!ranged || statics.contains(e)))
-        .map(|(e, _, _)| e)
-        .collect();
+    for (e, layers, ranged) in &meshes {
+        if !level.before.contains(&e) && !movers.contains(&e) && layers.is_none_or(|l| l.intersects(&RenderLayers::layer(0))) && (!ranged || statics.contains(&e)) {
+            commands.entity(e).try_insert(GlStatic);
+        }
+    }
 }
 
 /// Bakes the level once level-start script has run, with the same rule as `merge_statics`:
@@ -69,9 +70,9 @@ pub(crate) fn classify_baked(pending: Option<NonSendMut<Option<PendingBake>>>, m
 /// then is it known which actors stay. Baked: alive, visible, bStatic, not a mover. Every other
 /// actor stays an ordinary entity under `sync_transforms`. The two frames are counted from this
 /// level's load: `Sim::frames` runs across levels.
-pub(crate) fn bake_world(mut sim: NonSendMut<Sim>, pending: Option<NonSendMut<Option<PendingBake>>>, gles: Option<NonSendMut<Gles>>, baked: Option<ResMut<GlBaked>>) {
-    // All exist only with P2GAME_GLES=1.
-    let (Some(mut pending), Some(mut gles), Some(mut baked)) = (pending, gles, baked) else { return };
+pub(crate) fn bake_world(mut commands: Commands, mut sim: NonSendMut<Sim>, pending: Option<NonSendMut<Option<PendingBake>>>, gles: Option<NonSendMut<Gles>>) {
+    // Both exist only with P2GAME_GLES=1.
+    let (Some(mut pending), Some(mut gles)) = (pending, gles) else { return };
     let Some(p) = pending.as_mut() else { return };
     if sim.frames < *p.frame.get_or_insert(sim.frames + 2) {
         return;
@@ -86,8 +87,10 @@ pub(crate) fn bake_world(mut sim: NonSendMut<Sim>, pending: Option<NonSendMut<Op
     for (export, entities) in &level.actors {
         if skip.contains(export) {
             dynamic += entities.len();
-            for e in entities {
-                baked.0.remove(e);
+            for &e in entities {
+                if let Ok(mut entity) = commands.get_entity(e) {
+                    entity.try_remove::<GlStatic>();
+                }
             }
         } else {
             stay_baked.extend(entities.iter().copied());

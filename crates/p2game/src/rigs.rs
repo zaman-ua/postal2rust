@@ -7,6 +7,7 @@
 //! separate actors that the host moves to their bones, so they follow automatically. Actors
 //! spawned by script at runtime are picked up as they appear; destroyed or hidden ones are hidden.
 
+use crate::gles::View;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use p2anim::rig::{RigAssets, RigCache, c_mat};
@@ -213,8 +214,26 @@ pub fn spawn_new_rigs(
     n
 }
 
-/// Poses every rig from its actor's animation instance and placement.
-pub fn pose_rigs(host: &GameHost, vm: &Vm, rigs: &Query<&VmRig>, tfs: &mut Query<&mut Transform, Without<VmRig>>, vis: &mut Query<&mut Visibility, Without<VmRig>>) {
+/// Characters get at least this bounding radius (metres): animation reaches past the bind pose.
+const MIN_RADIUS: f32 = 3.0;
+
+/// Whether any camera in `views` could draw the actor's rig. A ragdoll may lie away from its actor,
+/// so it always counts.
+fn in_view(vm: &Vm, a: ObjId, x: &p2game::host::ActorAnim, views: &[View]) -> bool {
+    if x.inst.has_physics_pose() {
+        return true;
+    }
+    let scale = vm.get_prop(a, "DrawScale").map(|v| v.as_float()).filter(|s| *s > 0.0).unwrap_or(1.0);
+    // Twice the bind pose's reach covers stretched poses.
+    let radius = (x.inst.skeleton.reach() * scale * 2.0 / p2view::scene::UU_PER_M).max(MIN_RADIUS);
+    let center = p2view::scene::to_bevy(vm.actor_loc(a));
+    views.iter().any(|v| v.sees(center, radius))
+}
+
+/// Poses rigs from their actors' animation instances and placement. With `views`, only the rigs one
+/// of those cameras could draw: the others are hidden and cost neither a pose nor their joint
+/// transforms (the script side reads bones through the instance, which computes them on demand).
+pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<&VmRig>, tfs: &mut Query<&mut Transform, Without<VmRig>>, vis: &mut Query<&mut Visibility, Without<VmRig>>) {
     let c = c_mat();
     let ci = c.inverse();
     let mut anims = host.anims.borrow_mut();
@@ -224,7 +243,7 @@ pub fn pose_rigs(host: &GameHost, vm: &Vm, rigs: &Query<&VmRig>, tfs: &mut Query
     static WATCH_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let wf = WATCH_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for r in rigs.iter() {
-        let hidden = render_hidden(vm, r.actor);
+        let hidden = render_hidden(vm, r.actor) || views.is_some_and(|views| anims.get(&r.actor).is_some_and(|x| !in_view(vm, r.actor, x, views)));
         if let Some(w) = &watch {
             if wf % 60 == 0 && vm.classes[vm.objects[r.actor].class].name.to_ascii_lowercase().contains(w.as_str()) {
                 let sec_vis: Vec<String> = r.sections.iter().filter_map(|&s| vis.get(s).ok().map(|v| format!("{v:?}"))).collect();
