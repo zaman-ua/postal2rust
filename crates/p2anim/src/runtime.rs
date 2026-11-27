@@ -406,6 +406,12 @@ pub struct Attachment {
     pub relative: Mat4,
 }
 
+struct Attached {
+    transform: Attachment,
+    /// Script inputs for the current matrix. Arbitrary matrices have no matching inputs.
+    relative_input: Option<([u32; 3], Rotator)>,
+}
+
 pub struct AnimInstance {
     pub skeleton: Arc<Skeleton>,
     sets: Vec<Arc<Linked>>,
@@ -414,7 +420,7 @@ pub struct AnimInstance {
     loc_ctrl: HashMap<usize, BoneLoc>,
     /// Scale slot -> (bone, scale).
     scale_slots: HashMap<i32, (usize, f32)>,
-    attachments: FastMap<u64, Attachment>,
+    attachments: FastMap<u64, Attached>,
     root_lock: i32,
     root_prev: Option<BoneTransform>,
     root_delta_pos: Vec3,
@@ -800,7 +806,8 @@ impl AnimInstance {
     pub fn attach_to_bone(&mut self, id: u64, bone: &str, rel_location: Vec3, rel_rotation: Rotator) -> bool {
         let Some(b) = self.skeleton.bone(bone) else { return false };
         let relative = Mat4::from_translation(rel_location) * Mat4::from_mat3(rotator_mat3(rel_rotation));
-        self.attachments.insert(id, Attachment { bone: b, relative });
+        let relative_input = Some((rel_location.to_array().map(f32::to_bits), rel_rotation));
+        self.attachments.insert(id, Attached { transform: Attachment { bone: b, relative }, relative_input });
         true
     }
 
@@ -808,14 +815,18 @@ impl AnimInstance {
     /// lookup. Returns false if `id` is not attached.
     pub fn set_attachment_relative(&mut self, id: u64, rel_location: Vec3, rel_rotation: Rotator) -> bool {
         let Some(a) = self.attachments.get_mut(&id) else { return false };
-        a.relative = Mat4::from_translation(rel_location) * Mat4::from_mat3(rotator_mat3(rel_rotation));
+        let input = Some((rel_location.to_array().map(f32::to_bits), rel_rotation));
+        if a.relative_input != input {
+            a.transform.relative = Mat4::from_translation(rel_location) * Mat4::from_mat3(rotator_mat3(rel_rotation));
+            a.relative_input = input;
+        }
         true
     }
 
     /// Like [`Self::attach_to_bone`] with an arbitrary relative matrix (scale included).
     pub fn attach_with_matrix(&mut self, id: u64, bone: &str, relative: Mat4) -> bool {
         let Some(b) = self.skeleton.bone(bone) else { return false };
-        self.attachments.insert(id, Attachment { bone: b, relative });
+        self.attachments.insert(id, Attached { transform: Attachment { bone: b, relative }, relative_input: None });
         true
     }
 
@@ -825,12 +836,12 @@ impl AnimInstance {
     }
 
     pub fn attachments(&self) -> impl Iterator<Item = (&u64, &Attachment)> {
-        self.attachments.iter()
+        self.attachments.iter().map(|(id, a)| (id, &a.transform))
     }
 
     /// Actor-space transform of an attachment.
     pub fn attachment_transform(&mut self, id: u64) -> Option<Mat4> {
-        let a = *self.attachments.get(&id)?;
+        let a = self.attachments.get(&id)?.transform;
         Some(self.bone_actor_matrix(a.bone) * a.relative)
     }
 
@@ -839,34 +850,53 @@ impl AnimInstance {
     /// the pose stays out of date: actors nobody draws never pay for a full one. The results are
     /// the same as from a full pose.
     pub fn attachment_transforms(&mut self, ids: &[u64]) -> Vec<(u64, Mat4)> {
-        let found: Vec<(u64, Attachment)> = ids.iter().filter_map(|id| Some((*id, *self.attachments.get(id)?))).collect();
+        let mut out = Vec::new();
+        self.attachment_transforms_into(ids, &mut out);
+        out
+    }
+
+    /// Writes attachment transforms into a caller-owned buffer.
+    pub fn attachment_transforms_into(&mut self, ids: &[u64], out: &mut Vec<(u64, Mat4)>) {
+        out.clear();
+        let matrices = if self.dirty && self.physics_pose.is_none() {
+            self.evaluate_attachment_bones(ids);
+            &self.partial_world
+        } else {
+            if self.dirty && ids.iter().any(|id| self.attachments.contains_key(id)) {
+                self.evaluate();
+            }
+            &self.world
+        };
         let x = self.skeleton.mesh_xform;
-        // A physics pose replaces the whole animated one.
-        if !self.dirty || self.physics_pose.is_some() || found.is_empty() {
-            return found.into_iter().map(|(id, a)| (id, x * self.bone_matrices()[a.bone] * a.relative)).collect();
-        }
+        out.extend(ids.iter().filter_map(|id| {
+            let a = &self.attachments.get(id)?.transform;
+            Some((*id, x * matrices[a.bone] * a.relative))
+        }));
+    }
+
+    fn evaluate_attachment_bones(&mut self, ids: &[u64]) {
         let mut chain = std::mem::take(&mut self.partial_mask);
         let mut indices = std::mem::take(&mut self.partial_indices);
         chain.resize(self.skeleton.len(), false);
-        for (_, a) in &found {
-            let mut b = a.bone;
+        for a in ids.iter().filter_map(|id| self.attachments.get(id)) {
+            let mut b = a.transform.bone;
             while !std::mem::replace(&mut chain[b], true) {
                 indices.push(b);
                 if b == 0 { break; }
                 b = self.skeleton.parents[b];
             }
         }
-        let (mut pose, mut world) = (std::mem::take(&mut self.partial_pose), std::mem::take(&mut self.partial_world));
-        indices.sort_unstable();
-        self.animate(Bones::Only { mask: &chain, indices: &indices }, &mut pose, &mut world);
+        if !indices.is_empty() {
+            let (mut pose, mut world) = (std::mem::take(&mut self.partial_pose), std::mem::take(&mut self.partial_world));
+            indices.sort_unstable();
+            self.animate(Bones::Only { mask: &chain, indices: &indices }, &mut pose, &mut world);
+            (self.partial_pose, self.partial_world) = (pose, world);
+        }
         for b in indices.drain(..) {
             chain[b] = false;
         }
         self.partial_mask = chain;
         self.partial_indices = indices;
-        let out = found.into_iter().map(|(id, a)| (id, x * world[a.bone] * a.relative)).collect();
-        (self.partial_pose, self.partial_world) = (pose, world);
-        out
     }
 
     // ---- pose queries ---------------------------------------------------------------------
@@ -1562,6 +1592,23 @@ mod attachment_tests {
         assert!(a.set_bone_rotation("hand", [1000, 0, 2000], RotSpace::Component, 0.5));
         assert!(a.set_bone_location("neck", Vec3::new(0.0, 0.0, 4.0), 1.0));
         assert!(a.set_bone_scale(0, 0.5, Some("arm")));
+    }
+
+    #[test]
+    fn attachment_updates_replace_custom_matrices_and_clear_reused_output() {
+        let mut anim = instance();
+        let relative = Mat4::from_scale(Vec3::splat(2.0));
+        assert!(anim.attach_with_matrix(1, "head", relative));
+        assert_eq!(anim.attachments().find(|(id, _)| **id == 1).unwrap().1.relative, relative);
+        assert!(anim.set_attachment_relative(1, Vec3::ZERO, [0; 3]));
+
+        let mut out = vec![(99, Mat4::ZERO)];
+        anim.attachment_transforms_into(&[2, 99, 1], &mut out);
+        assert_eq!(
+            out,
+            [2, 1].map(|id| (id, anim.attachment_transform(id).unwrap())),
+        );
+        assert_eq!(anim.attachments().find(|(id, _)| **id == 1).unwrap().1.relative, Mat4::IDENTITY);
     }
 
     #[test]

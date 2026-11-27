@@ -564,19 +564,22 @@ impl GameHost {
             .filter(|(a, x)| x.inst.attachments().next().is_some() && vm.objects.get(**a).is_some_and(|o| !o.deleted))
             .map(|(&a, _)| (depth(vm, a), a)).collect();
         order.sort_unstable();
+        let mut ids = Vec::new();
+        let mut moves = Vec::new();
         for (_, a) in order {
-            self.place_children(vm, a);
+            self.place_children(vm, a, &mut ids, &mut moves);
         }
     }
 
     /// Moves every actor attached to `a`'s bones to its bone transform.
-    fn place_children(&self, vm: &mut Vm, a: ObjId) {
-        let (world, moves) = {
+    fn place_children(&self, vm: &mut Vm, a: ObjId, ids: &mut Vec<u64>, moves: &mut Vec<(u64, Mat4)>) {
+        let world = {
             let mut m = self.anims.borrow_mut();
             let Some(x) = m.get_mut(&a) else { return };
             let world = skel_actor_world(vm, a, x.inst.skeleton.mesh_xform);
-            let ids: Vec<u64> = x.inst.attachments().map(|(id, _)| *id).collect();
-            for &id in &ids {
+            ids.clear();
+            ids.extend(x.inst.attachments().map(|(id, _)| *id));
+            for &id in ids.iter() {
                 // Script may change RelativeLocation/Rotation after attaching (heads do).
                 if let Some(child) = vm.objects.get(id as usize).filter(|o| !o.deleted).map(|_| id as ObjId) {
                     let rel_l = Vec3::from(vm.field(child, prop!("RelativeLocation")).map(|v| v.as_vec()).unwrap_or_default());
@@ -584,9 +587,10 @@ impl GameHost {
                     x.inst.set_attachment_relative(id, rel_l, rel_r);
                 }
             }
-            (world, x.inst.attachment_transforms(&ids))
+            x.inst.attachment_transforms_into(ids, moves);
+            world
         };
-        for (id, transform) in moves {
+        for &(id, transform) in moves.iter() {
             let child = id as ObjId;
             if vm.objects.get(child).is_none_or(|o| o.deleted) {
                 continue;
