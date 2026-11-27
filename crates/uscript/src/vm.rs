@@ -543,7 +543,14 @@ impl SegName {
 
 struct Place {
     root: Root,
-    path: Vec<Seg>,
+    // A single array index, length or struct member is common in script loops.
+    path: smallvec::SmallVec<[Seg; 1]>,
+}
+
+impl Place {
+    fn new(root: Root) -> Self {
+        Self { root, path: smallvec::SmallVec::new() }
+    }
 }
 
 /// How a statement list finished.
@@ -2020,7 +2027,7 @@ impl Vm {
                 let ObjRef::Export(i) = r else { return err("local variable is not an export") };
                 let idx = self.frame().fi.as_ref().and_then(|fi| fi.local_index.get(&(*i as u32)).copied());
                 let idx = idx.ok_or_else(|| ScriptError::Bad("unknown local".into()))?;
-                Place { root: Root::Local(idx), path: Vec::new() }
+                Place::new(Root::Local(idx))
             }
             Expr::InstanceVar(r) => {
                 let f = self.resolve(pkg, *r).ok_or_else(|| ScriptError::Bad("unresolved instance variable".into()))?;
@@ -2029,12 +2036,12 @@ impl Vm {
                         // Properties of a class object itself (Object.Name / Object.Class).
                         let n = self.field_name(f);
                         if n.eq_ignore_ascii_case("Name") {
-                            return Ok(Place { root: Root::Temp(Value::Name(self.classes[c].name.clone())), path: Vec::new() });
+                            return Ok(Place::new(Root::Temp(Value::Name(self.classes[c].name.clone()))));
                         }
                     }
                     let msg = format!("Warning: Accessed None ({})", self.field_name(f));
                     self.push_log(msg);
-                    return Ok(Place { root: Root::Temp(Value::Void), path: Vec::new() });
+                    return Ok(Place::new(Root::Temp(Value::Void)));
                 };
                 let class = self.objects[o].class;
                 let s = match self.classes[class].slot_by_field.get(&f) {
@@ -2043,18 +2050,18 @@ impl Vm {
                         // `class X within Y`: Y's variables are accessed through the Outer object.
                         let outer = self.get_prop(o, "Outer").and_then(|v| v.as_obj());
                         match outer.and_then(|w| self.classes[self.objects[w].class].slot_by_field.get(&f).map(|&s| (w, s))) {
-                            Some((w, s)) => return Ok(Place { root: Root::Inst(w, s), path: Vec::new() }),
+                            Some((w, s)) => return Ok(Place::new(Root::Inst(w, s))),
                             None => return err(format!("{} not in object class", self.field_name(f))),
                         }
                     }
                 };
-                Place { root: Root::Inst(o, s), path: Vec::new() }
+                Place::new(Root::Inst(o, s))
             }
             Expr::DefaultVar(r) => {
                 let f = self.resolve(pkg, *r).ok_or_else(|| ScriptError::Bad("unresolved default variable".into()))?;
                 let c = self.ctx_class(ctx).ok_or_else(|| ScriptError::Bad("default access without a class".into()))?;
                 let s = *self.classes[c].slot_by_field.get(&f).ok_or_else(|| ScriptError::Bad("default variable not in class".into()))?;
-                Place { root: Root::Default(c, s), path: Vec::new() }
+                Place::new(Root::Default(c, s))
             }
             Expr::ArrayElement { index, array } | Expr::DynArrayElement { index, array } => {
                 let i = self.eval(index, Ctx::Frame)?.as_int().max(0) as usize;
@@ -2080,7 +2087,7 @@ impl Vm {
                     Value::Object(None) | Value::Void => {
                         let f = self.frames.last().and_then(|fr| fr.fi.as_ref()).map(|fi| format!("{}.{}", fi.owner, fi.name)).unwrap_or_default();
                         self.push_log(format!("Warning: Accessed None (in {f})"));
-                        Place { root: Root::Temp(Value::Void), path: Vec::new() }
+                        Place::new(Root::Temp(Value::Void))
                     }
                     Value::Object(Some(o)) => self.place(expr, Ctx::Obj(Some(o)))?,
                     Value::Class(Some(c)) => self.place(expr, Ctx::Class(c))?,
@@ -2092,21 +2099,21 @@ impl Vm {
                         };
                         let h = self.host.clone();
                         match prop.and_then(|p| h.resource_prop(self, &path, &p)) {
-                            Some(v) => Place { root: Root::Temp(v), path: Vec::new() },
-                            None => Place { root: Root::Temp(self.eval(expr, Ctx::Obj(None))?), path: Vec::new() },
+                            Some(v) => Place::new(Root::Temp(v)),
+                            None => Place::new(Root::Temp(self.eval(expr, Ctx::Obj(None))?)),
                         }
                     }
-                    _ => Place { root: Root::Temp(self.eval(expr, Ctx::Obj(None))?), path: Vec::new() },
+                    _ => Place::new(Root::Temp(self.eval(expr, Ctx::Obj(None))?)),
                 }
             }
             Expr::ClassContext { obj, expr, .. } => match self.eval(obj, Ctx::Frame)? {
                 Value::Class(Some(c)) => self.place(expr, Ctx::Class(c))?,
                 _ => {
                     self.push_log("Warning: Accessed None (class context)");
-                    Place { root: Root::Temp(Value::Void), path: Vec::new() }
+                    Place::new(Root::Temp(Value::Void))
                 }
             },
-            other => Place { root: Root::Temp(self.eval_value(other, ctx)?), path: Vec::new() },
+            other => Place::new(Root::Temp(self.eval_value(other, ctx)?)),
         })
     }
 
@@ -2344,7 +2351,7 @@ impl Vm {
                         return Ok(fi.ret_zero());
                     }
                 }
-                self.call_expr(f, this, Some(class), args)?
+                self.call_expr_with_info(f, fi, this, Some(class), args)?
             }
             Expr::GlobalFunction { name, args } => {
                 let sp = self.pkgs[pkg].clone();
@@ -2384,7 +2391,7 @@ impl Vm {
                 if let Expr::StructMember { prop, expr } = other {
                     let name = SegName(self.pkgs[pkg].clone(), *prop);
                     let v = self.eval(expr, ctx)?;
-                    return Ok(self.read(&Place { root: Root::Temp(v), path: vec![Seg::Field(name)] }));
+                    return Ok(self.read(&Place { root: Root::Temp(v), path: smallvec::smallvec![Seg::Field(name)] }));
                 }
                 return err(format!("unsupported expression {other:?}"));
             }
@@ -2404,6 +2411,10 @@ impl Vm {
     /// Evaluates call arguments in the caller frame, invokes, and writes back out parameters.
     fn call_expr(&mut self, f: FieldId, this: Option<ObjId>, class: Option<ClassId>, args: &[Expr]) -> Result<Value> {
         let fi = self.func_info(f)?;
+        self.call_expr_with_info(f, fi, this, class, args)
+    }
+
+    fn call_expr_with_info(&mut self, f: FieldId, fi: Rc<FuncInfo>, this: Option<ObjId>, class: Option<ClassId>, args: &[Expr]) -> Result<Value> {
         // Argument buffers are pooled: every script-to-script and operator call used to allocate
         // one. Natives and script calls hand the same Vec back as the parameter result.
         let mut vals = self.args_pool.pop().unwrap_or_default();
