@@ -301,8 +301,9 @@ pub fn run(cfg: BootConfig, args: Args) {
         .add_systems(
             Update,
             (
+                update_start,
                 (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::gles::bake_world, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override, pose_rigs, crate::ui::hide_own_body).chain(),
-                (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide).chain(),
+                (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide, update_end).chain(),
             )
                 .chain(),
         )
@@ -1046,6 +1047,42 @@ thread_local! {
     static SYS_TIMES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// Where the wall-clock frame split last left off (see [`wall_lap`]).
+    static WALL_MARK: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Books the wall time since the previous lap under `name` and starts a new one. Splits the part
+/// of the frame no system timer covers: Bevy's own schedules and the waits for their systems.
+pub(crate) fn wall_lap(name: &'static str) {
+    let now = std::time::Instant::now();
+    if let Some(last) = WALL_MARK.with(|m| m.replace(Some(now))) {
+        add_sys_time(name, (now - last).as_secs_f64() * 1000.0);
+    }
+}
+
+/// From the end of the last frame's draw to the start of the main `Update` chain (winit, `First`,
+/// `PreUpdate`). `NonSend` keeps it on the main thread, where the marks and timers live.
+fn update_start(_main: NonSend<Sim>) {
+    wall_lap("wall:pre_update");
+}
+
+/// End of the `Update` chains. Their time is already split by the game and system timers, so
+/// only the mark moves; the next lap (`PostUpdate`) ends when the frame starts drawing.
+fn update_end(_main: NonSend<Sim>) {
+    WALL_MARK.with(|m| m.set(Some(std::time::Instant::now())));
+}
+
+fn add_sys_time(name: &'static str, ms: f64) {
+    SYS_TIMES.with(|t| {
+        let mut t = t.borrow_mut();
+        match t.iter_mut().find(|e| e.0 == name) {
+            Some(e) => e.1 += ms,
+            None => t.push((name, ms)),
+        }
+    });
+}
+
 /// Adds the lifetime of the guard to the named system's total (profile report).
 pub(crate) struct SysTimer(&'static str, std::time::Instant);
 
@@ -1063,13 +1100,7 @@ impl Drop for SysTimer {
         if SPIKE.with(|s| s.is_some_and(|lim| ms > lim)) {
             println!("SPIKE {} {ms:.1} ms", self.0);
         }
-        SYS_TIMES.with(|t| {
-            let mut t = t.borrow_mut();
-            match t.iter_mut().find(|e| e.0 == self.0) {
-                Some(e) => e.1 += ms,
-                None => t.push((self.0, ms)),
-            }
-        });
+        add_sys_time(self.0, ms);
     }
 }
 

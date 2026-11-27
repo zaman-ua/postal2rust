@@ -77,6 +77,15 @@ impl Gles {
     }
 }
 
+/// Books the draw itself when `draw_frame` returns, however it returns.
+struct DrawLap;
+
+impl Drop for DrawLap {
+    fn drop(&mut self) {
+        crate::window::wall_lap("wall:draw_frame");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_frame(
     gles: Option<NonSendMut<Gles>>,
@@ -93,6 +102,8 @@ pub(super) fn draw_frame(
     let Some(mut gles) = gles else { return };
     let gles = &mut *gles;
     let Some(window) = window.iter().next() else { return };
+    crate::window::wall_lap("wall:post_update");
+    let _lap = DrawLap;
     let start = Instant::now();
     let cams = cameras.active();
     if cams.is_empty() {
