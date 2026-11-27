@@ -29,7 +29,7 @@ pub(crate) struct DevMenuPlugin;
 
 impl Plugin for DevMenuPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<WireframePlugin>() {
+        if !app.is_plugin_added::<WireframePlugin>() && !crate::gles::trimmed("wire") {
             app.add_plugins(WireframePlugin::default());
         }
         app.insert_resource(WireframeConfig { global: false, default_color: Color::srgb(0.3, 1.0, 0.6), ..default() })

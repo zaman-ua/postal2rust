@@ -98,6 +98,15 @@ pub(crate) fn bake_world(mut commands: Commands, mut sim: NonSendMut<Sim>, pendi
         }
     }
     sim.stop_driving(&stay_baked);
+    if super::trimmed("statics") {
+        // Nothing draws or drives them any more, but Bevy's visibility, bounds and asset-change
+        // systems would still visit every one of them each frame.
+        for &e in &stay_baked {
+            if let Ok(mut entity) = commands.get_entity(e) {
+                entity.try_despawn();
+            }
+        }
+    }
     gles.load_world(level.data, skip);
     println!("gles: {} static mesh entities baked, {dynamic} stay dynamic", stay_baked.len());
 }

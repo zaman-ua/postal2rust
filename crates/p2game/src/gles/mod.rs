@@ -119,6 +119,20 @@ fn init_gles(world: &mut World) {
     }
 }
 
+/// Whether the p2gles frame drops the piece of Bevy's render bookkeeping named `key`
+/// (`P2GAME_GLES_TRIM`, a comma-separated list; default `mat,spec,wire,prev,statics`). Systems
+/// removed by [`trim_bevy_systems`]: `mat`, `spec`, `mesh`, `vis`, `prev` (motion-vector history).
+/// `wire`: no `WireframePlugin`, whose wireframes only Bevy's renderer draws. `statics`: baked
+/// static mesh entities are despawned after the bake, so Bevy's visibility, bounds and
+/// asset-change systems stop visiting them (~2.8 ms of `PostUpdate` per frame on suburbs-3).
+pub(crate) fn trimmed(key: &str) -> bool {
+    static ONLY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let only = ONLY.get_or_init(|| {
+        (enabled() && std::env::var_os("P2GAME_GLES_BEVY_FULL").is_none()).then(|| std::env::var("P2GAME_GLES_TRIM").unwrap_or_else(|_| "mat,spec,wire,prev,statics".into()))
+    });
+    only.as_deref().is_some_and(|only| only.split(',').any(|x| x == key))
+}
+
 /// Bevy's renderer is absent, but its main-world bookkeeping for it still runs every frame:
 /// per-view frustum culling (`ViewVisibility`, which p2gles does not read: it culls by itself) and
 /// marking `Mesh3d` changed when a mesh or material asset changes (for re-extraction and pipeline
@@ -136,8 +150,11 @@ fn trim_bevy_systems(world: &mut World) {
     world.resource_scope(|world, mut schedules: Mut<Schedules>| {
         let mut removed = 0;
         let mut rm = |n: Result<usize, bevy::ecs::schedule::ScheduleError>| removed += n.unwrap_or(0);
-        let only = std::env::var("P2GAME_GLES_TRIM").unwrap_or_else(|_| "mat,spec".into());
-        let on = |k: &str| only.split(',').any(|x| x == k);
+        let on = trimmed;
+        if on("prev") {
+            // Previous-frame transforms for motion vectors, which p2gles does not draw.
+            rm(schedules.remove_systems_in_set(PreUpdate, bevy::pbr::update_mesh_previous_global_transforms, world, RemoveSystemsOnly));
+        }
         if on("vis") {
             rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::CheckVisibility, world, RemoveSystemsOnly));
             rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::MarkNewlyHiddenEntitiesInvisible, world, RemoveSystemsOnly));
