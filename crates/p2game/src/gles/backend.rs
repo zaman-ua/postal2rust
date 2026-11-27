@@ -139,11 +139,17 @@ impl Backend {
                 self.dynamic.add_tex(&self.gl, key, &TexIn { width: t.width, height: t.height, format: t.format, mips, repeat: t.repeat });
             }
             Cmd::Retain(meshes, textures) => self.dynamic.retain(&self.gl, &meshes, &textures),
-            Cmd::DropWorld => self.renderer = None,
+            Cmd::DropWorld => self.drop_world(),
             Cmd::LoadWorld(data, skip_exports) => self.load_world(&data, skip_exports),
             Cmd::Frame(frame) => return Some(self.present(*frame)),
         }
         None
+    }
+
+    fn drop_world(&mut self) {
+        if let Some(world) = self.renderer.take() {
+            world.destroy();
+        }
     }
 
     /// Bakes a level's static geometry into GL buffers (replaces the previous level's).
@@ -152,7 +158,7 @@ impl Backend {
         if !dre.is_null() {
             let _ = p2gles::renderer::DRAW_RANGE_ELEMENTS.set(dre as usize);
         }
-        self.renderer = None; // free the old level's GL objects first
+        self.drop_world();
         let t = Instant::now();
         let opts = Options { chunk: 48.0, fog: None, no_cull: false, skip_exports };
         // The renderer owns its own function table for the same context.

@@ -9,6 +9,7 @@ pub(crate) struct View {
     pub pos: Vec3,
     /// World-space planes, normals pointing inwards.
     planes: [Vec4; 6],
+    plane_lengths: [f32; 6],
     fog_end: Option<f32>,
 }
 
@@ -16,7 +17,8 @@ impl View {
     pub fn new(view_proj: Mat4, pos: Vec3, fog_end: Option<f32>) -> View {
         let row = |i: usize| Vec4::new(view_proj.x_axis[i], view_proj.y_axis[i], view_proj.z_axis[i], view_proj.w_axis[i]);
         let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
-        View { pos, planes: [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2], fog_end }
+        let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2];
+        View { pos, planes, plane_lengths: planes.map(|p| p.truncate().length()), fog_end }
     }
 
     /// The view projection of a perspective camera as p2gles draws it.
@@ -27,7 +29,12 @@ impl View {
 
     /// Whether any of a bounding sphere is inside the frustum and nearer than the end of the fog.
     pub fn sees(&self, center: Vec3, radius: f32) -> bool {
-        self.fog_end.is_none_or(|end| self.pos.distance(center) - radius <= end * 1.05) && self.planes.iter().all(|p| p.truncate().dot(center) + p.w >= -radius * p.truncate().length())
+        self.sees_at_distance(center, radius, self.pos.distance(center))
+    }
+
+    pub(super) fn sees_at_distance(&self, center: Vec3, radius: f32, distance: f32) -> bool {
+        self.fog_end.is_none_or(|end| distance - radius <= end * 1.05)
+            && self.planes.iter().zip(self.plane_lengths).all(|(p, len)| p.truncate().dot(center) + p.w >= -radius * len)
     }
 }
 

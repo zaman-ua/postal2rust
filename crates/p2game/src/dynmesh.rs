@@ -15,6 +15,7 @@ use p2game::host::{actor_world, resolve_path};
 use std::collections::{HashMap, HashSet};
 use upkg::library::{Library, Obj};
 use upkg::texture::read_texture;
+use uscript::prop;
 use uscript::vm::{ObjId, Value, Vm};
 
 /// `EDrawType::DT_StaticMesh`.
@@ -129,8 +130,6 @@ struct DynActor {
 
 #[derive(Default)]
 pub struct DynMeshTracker {
-    /// Actors present when the level loaded (rendered by p2view, never by this module).
-    level_actors: HashSet<ObjId>,
     /// Level actors p2view did not draw but that have a static mesh (class-default StaticMesh).
     level_extra: HashSet<ObjId>,
     /// Static lighting for level_extra actors (built at level load).
@@ -159,7 +158,6 @@ impl DynMeshTracker {
         self.actors.clear();
         self.floor = vm.actors.iter().copied().max();
         self.level_extra = vm.actors.iter().copied().filter(|a| !rendered.contains(a) && static_mesh_path(vm, *a, player).is_some()).collect();
-        self.level_actors = vm.actors.iter().copied().filter(|a| !self.level_extra.contains(a)).collect();
     }
 
     /// Static lighting data for the level's pickups (zones and lights of the loaded map).
@@ -440,13 +438,15 @@ fn bake_sections(commands: &mut Commands, colors: Vec<[f32; 4]>, sections: &[Ent
 }
 
 fn static_mesh_path(vm: &Vm, a: ObjId, player: Option<ObjId>) -> Option<&str> {
-    if !matches!(vm.get_prop(a, "DrawType"), Some(Value::Byte(DT_STATIC_MESH))) {
+    if !matches!(vm.field(a, prop!("DrawType")), Some(Value::Byte(DT_STATIC_MESH))) {
         return None;
     }
+    let path = vm.field(a, prop!("StaticMesh")).and_then(|v| v.as_resource())?;
     // First-person-only meshes, and the player's own third-person attachments, are not drawn
     // in the world view (same rule as the skeletal rigs).
-    let flag = |n: &str| vm.get_prop(a, n).is_some_and(|v| v.as_bool());
-    if flag("bOnlyOwnerSee") || (flag("bOwnerNoSee") && player.is_some_and(|p| owned_by(vm, a, p))) {
+    if vm.field(a, prop!("bOnlyOwnerSee")).is_some_and(Value::as_bool)
+        || (vm.field(a, prop!("bOwnerNoSee")).is_some_and(Value::as_bool) && player.is_some_and(|p| owned_by(vm, a, p)))
+    {
         return None;
     }
     // Canvas-only props: MapScreen's HeadMarker/TrailMarker (ArrowBox/DashBox) and NewsScreen's
@@ -454,7 +454,7 @@ fn static_mesh_path(vm: &Vm, a: ObjId, player: Option<ObjId>) -> Option<&str> {
     // Canvas.DrawActor, placed just in front of the camera while the screen runs. In the world
     // view they would hang there as an untextured block (FIDELITY #48).
     if vm.classes[vm.objects[a].class].name.eq_ignore_ascii_case("RawActor")
-        && vm.get_prop(a, "Owner").and_then(|v| v.as_obj()).is_some_and(|o| vm.class_is_a(vm.objects[o].class, "PlayerController"))
+        && vm.field(a, prop!("Owner")).and_then(|v| v.as_obj()).is_some_and(|o| vm.class_is_a(vm.objects[o].class, "PlayerController"))
     {
         return None;
     }
@@ -462,37 +462,37 @@ fn static_mesh_path(vm: &Vm, a: ObjId, player: Option<ObjId>) -> Option<&str> {
     // chain): the third-person weapon in the Dude's hand (PistolAttachment, bOwnerNoSee false)
     // would otherwise float in front of the camera (FIDELITY #46). The behind view shows them.
     if let Some(p) = player {
-        let pawn = vm.get_prop(p, "Pawn").and_then(|v| v.as_obj());
+        let pawn = vm.field(p, prop!("Pawn")).and_then(|v| v.as_obj());
         if pawn.is_some_and(|pw| based_on(vm, a, pw)) && !crate::ui::third_person(vm, p) {
             return None;
         }
     }
-    vm.get_prop(a, "StaticMesh").and_then(|v| v.as_resource())
+    Some(path)
 }
 
 /// True if `a`'s Base chain reaches `pawn`.
 fn based_on(vm: &Vm, a: ObjId, pawn: ObjId) -> bool {
-    let mut cur = vm.get_prop(a, "Base").and_then(|v| v.as_obj());
+    let mut cur = vm.field(a, prop!("Base")).and_then(|v| v.as_obj());
     for _ in 0..6 {
         let Some(c) = cur else { return false };
         if c == pawn {
             return true;
         }
-        cur = vm.get_prop(c, "Base").and_then(|v| v.as_obj());
+        cur = vm.field(c, prop!("Base")).and_then(|v| v.as_obj());
     }
     false
 }
 
 /// True if `a` is `who`, its pawn, or owned (transitively) by either.
 fn owned_by(vm: &Vm, a: ObjId, who: ObjId) -> bool {
-    let pawn = vm.get_prop(who, "Pawn").and_then(|v| v.as_obj());
+    let pawn = vm.field(who, prop!("Pawn")).and_then(|v| v.as_obj());
     let mut cur = Some(a);
     for _ in 0..8 {
         let Some(c) = cur else { return false };
         if c == who || Some(c) == pawn {
             return true;
         }
-        cur = vm.get_prop(c, "Owner").and_then(|v| v.as_obj());
+        cur = vm.field(c, prop!("Owner")).and_then(|v| v.as_obj());
     }
     false
 }
@@ -516,11 +516,11 @@ pub fn update(
     // Candidates that draw a static mesh this frame (the place pass below reuses it rather than
     // evaluating `static_mesh_path` a second time per actor; the VM does not change in between).
     let mut drawn: HashSet<ObjId> = HashSet::with_capacity(tracker.actors.len() + 8);
-    // Candidates: actors spawned after the load (id above the floor) plus the level's extra mesh
-    // actors. Testing the other ~5000 level actors against two hash sets every frame was a
-    // measurable part of the frame; the floor test alone rejects them.
+    // Candidates are the runtime-spawned suffix and the level's extra mesh actors. Spawning
+    // appends IDs allocated after the load floor, and removing destroyed actors keeps order.
+    let first_runtime = floor.map_or(0, |f| vm.actors.partition_point(|&a| a <= f));
     let mut consider = |a: ObjId, want: &mut Vec<(ObjId, String)>| {
-        if vm.objects.get(a).is_none_or(|o| o.deleted) || tracker.level_actors.contains(&a) {
+        if vm.objects.get(a).is_none_or(|o| o.deleted) {
             return;
         }
         if let Some(p) = static_mesh_path(vm, a, player) {
@@ -530,16 +530,8 @@ pub fn update(
             }
         }
     };
-    for &a in &vm.actors {
-        if floor.is_some_and(|f| a <= f) {
-            continue;
-        }
+    for &a in vm.actors[first_runtime..].iter().chain(&tracker.level_extra) {
         consider(a, &mut want);
-    }
-    if floor.is_some() {
-        for &a in &tracker.level_extra {
-            consider(a, &mut want);
-        }
     }
     if want.len() > 4 && std::env::var_os("P2GAME_SPIKES").is_some() {
         println!("dynmesh: {} new actors this frame ({} cached meshes)", want.len(), tracker.cache.len());
@@ -639,7 +631,7 @@ pub fn update(
         let hidden = p2game::ai::render_hidden(vm, a);
         // Most of these never move (pickups lying in the level): skip the entity updates while
         // the actor's location, rotation, scale and visibility are unchanged.
-        let key = (vm.actor_loc(a), vm.actor_rot(a), vm.get_prop(a, "DrawScale").map(|v| v.as_float().to_bits()), hidden);
+        let key = (vm.actor_loc(a), vm.actor_rot(a), vm.field(a, prop!("DrawScale")).map(|v| v.as_float().to_bits()), hidden);
         if d.last.as_ref() == Some(&key) {
             return true;
         }

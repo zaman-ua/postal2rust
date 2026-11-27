@@ -193,10 +193,41 @@ impl SceneMeshes<'_, '_> {
     /// it, uploading what they need.
     pub fn collect_meshes(&self, cams: &[Cam], gles: &mut Gles, meshes: &Assets<Mesh>, images: &Assets<Image>, passes: &mut [Pass]) {
         let mut skeletons = Skeletons::new();
+        let default_layer = RenderLayers::default();
         for (mesh3d, transform, visible, layers, skin, standard, baked_material, aabb, no_culling, range) in &self.entities {
             if !visible.get() {
                 continue;
             }
+            let layers = layers.unwrap_or(&default_layer);
+            let model = transform.to_matrix();
+            // The root sphere replaces the AABB and NoFrustumCulling marker on rigs.
+            let root = skin.and_then(|s| s.joints.first()).and_then(|&j| self.joints.get(j).ok());
+            let (center, radius) = if let Some(root) = root {
+                (root.translation(), Some(3.0))
+            } else {
+                let center = model.transform_point3(aabb.map(|a| Vec3::from(a.center)).unwrap_or(Vec3::ZERO));
+                let radius = aabb.filter(|_| !no_culling && skin.is_none()).map(|a| {
+                    let scale = model.x_axis.truncate().length().max(model.y_axis.truncate().length()).max(model.z_axis.truncate().length());
+                    Vec3::from(a.half_extents).length() * scale
+                });
+                (center, radius)
+            };
+            let mut views = cams.iter().enumerate().filter_map(|(i, cam)| {
+                if !cam.layers.intersects(layers) {
+                    return None;
+                }
+                let dist = (center - cam.pos).length();
+                if range.is_some_and(|r| dist > r.end_margin.end)
+                    || radius.is_some_and(|r| !cam.view.sees_at_distance(center, r, dist))
+                {
+                    return None;
+                }
+                Some((i, dist))
+            }).peekable();
+            if views.peek().is_none() {
+                continue;
+            }
+            // Rejected meshes need no asset lookups, lighting conversion or skinning matrices.
             let Some(mesh) = meshes.get(&mesh3d.0) else { continue };
             let mat = match (baked_material, standard) {
                 (Some(b), _) => self.baked_materials.get(&b.0).map(|b| Material { base: &b.base, lightmap: Some(&b.extension.lightmap) }),
@@ -204,9 +235,6 @@ impl SceneMeshes<'_, '_> {
                 _ => None,
             };
             let Some(mat) = mat else { continue };
-            let layers = layers.cloned().unwrap_or_default();
-            let model = transform.to_matrix();
-            // Skinned meshes ignore their own transform.
             let joints = match skin {
                 Some(skin) => match self.skeleton(skin, &mut skeletons) {
                     Some(joints) => Some(joints),
@@ -214,52 +242,26 @@ impl SceneMeshes<'_, '_> {
                 },
                 None => None,
             };
-            // Culling sphere. Rough bounds for characters: 3 m around the skeleton root (ragdolls
-            // stay close).
-            let root = skin.and_then(|s| s.joints.first()).and_then(|&j| self.joints.get(j).ok());
-            let (center, radius, cullable) = match (root, aabb) {
-                // The skeleton's bounds replace `NoFrustumCulling`, which rigs carry because Bevy
-                // cannot bound a skinned mesh.
-                (Some(root), _) => (root.translation(), 3.0, true),
-                (None, aabb) => {
-                    let scale = model.x_axis.truncate().length().max(model.y_axis.truncate().length()).max(model.z_axis.truncate().length());
-                    let center = model.transform_point3(aabb.map(|a| Vec3::from(a.center)).unwrap_or(Vec3::ZERO));
-                    let radius = aabb.map(|a| Vec3::from(a.half_extents).length() * scale).unwrap_or(0.0);
-                    (center, radius, !no_culling && aabb.is_some() && skin.is_none())
-                }
-            };
             let (blend, cutoff, light, color) = shading(&mat, mesh);
             let base = mat.base;
-            let uv = bevy::math::Mat3::from(base.uv_transform).to_cols_array();
-            let mut seen = false;
-            for (cam, pass) in cams.iter().zip(passes.iter_mut()) {
-                if !cam.layers.intersects(&layers) {
-                    continue;
-                }
-                let dist = (center - cam.pos).length();
-                if range.is_some_and(|r| dist > r.end_margin.end) || (cullable && !cam.view.sees(center, radius)) {
-                    continue;
-                }
-                seen = true;
-                pass.meshes.push(Draw {
-                    mesh: aid(mesh3d.0.id()),
-                    tex: base.base_color_texture.as_ref().map(|h| aid(h.id())),
-                    lightmap: mat.lightmap.map(|h| aid(h.id())),
-                    model,
-                    joints: joints.clone(),
-                    color,
-                    blend,
-                    cutoff,
-                    two_sided: base.double_sided || base.cull_mode.is_none(),
-                    light,
-                    uv,
-                    // Bevy sorts translucent draws by distance + depth_bias (bigger = drawn later).
-                    depth: dist - base.depth_bias,
-                    overlay: false,
-                });
-            }
-            if !seen {
-                continue;
+            let draw = Draw {
+                mesh: aid(mesh3d.0.id()),
+                tex: base.base_color_texture.as_ref().map(|h| aid(h.id())),
+                lightmap: mat.lightmap.map(|h| aid(h.id())),
+                model,
+                joints,
+                color,
+                blend,
+                cutoff,
+                two_sided: base.double_sided || base.cull_mode.is_none(),
+                light,
+                uv: bevy::math::Mat3::from(base.uv_transform).to_cols_array(),
+                depth: 0.0,
+                overlay: false,
+            };
+            for (i, dist) in views {
+                // Bevy sorts translucent draws by distance + depth_bias (bigger = drawn later).
+                passes[i].meshes.push(Draw { depth: dist - base.depth_bias, ..draw.clone() });
             }
             gles.upload_mesh(mesh3d.0.id(), mesh);
             for handle in base.base_color_texture.iter().chain(mat.lightmap) {

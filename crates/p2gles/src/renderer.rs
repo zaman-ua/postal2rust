@@ -114,12 +114,15 @@ pub struct Renderer {
     /// [0] no discard (opaque, splat, blended), [1] alpha-tested (masked pass).
     progs: [glow::Program; 2],
     vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    shared_ibo: Option<glow::Buffer>,
     draws: Vec<Draw>,
     /// One index buffer per draw record (`P2GLES_ONE_IBO=1`: one shared buffer). Panfrost caches
     /// index min/max per buffer in a small cache; with one shared buffer for ~240 draws the cache
     /// thrashed and the driver rescanned the index ranges on the CPU every frame (~88% of a frame).
     ibos: Vec<Option<glow::Buffer>>,
     order: [Vec<usize>; 4],
+    visible_blended: Vec<usize>,
     textures: HashMap<u32, glow::Texture>,
     lightmaps: HashMap<u32, glow::Texture>,
     alphas: HashMap<u32, glow::Texture>,
@@ -381,20 +384,22 @@ impl Renderer {
             let vbo = gl.create_buffer().unwrap();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * VSIZE as usize), glow::STATIC_DRAW);
-            let ibo = gl.create_buffer().unwrap();
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-            gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(idx.as_ptr() as *const u8, idx.len() * 4), glow::STATIC_DRAW);
-            let mut ibos: Vec<Option<glow::Buffer>> = vec![None; draws.len()];
-            if std::env::var_os("P2GLES_ONE_IBO").is_none() {
-                for (i, d) in draws.iter().enumerate() {
+            let mut ibos = vec![None; draws.len()];
+            let shared_ibo = if std::env::var_os("P2GLES_ONE_IBO").is_some() {
+                let ibo = gl.create_buffer().unwrap();
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(idx.as_ptr() as *const u8, idx.len() * 4), glow::STATIC_DRAW);
+                Some(ibo)
+            } else {
+                for (d, slot) in draws.iter().zip(&mut ibos) {
                     let b = gl.create_buffer().unwrap();
                     gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b));
                     let sl = &idx[d.first as usize..(d.first + d.count) as usize];
                     gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(sl.as_ptr() as *const u8, sl.len() * 4), glow::STATIC_DRAW);
-                    ibos[i] = Some(b);
+                    *slot = Some(b);
                 }
-                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-            }
+                None
+            };
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, VSIZE, 0);
             gl.enable_vertex_attrib_array(1);
@@ -457,7 +462,7 @@ impl Renderer {
             let skip = std::env::var("P2GLES_SKIP").unwrap_or_default();
             let skip_passes = ["opaque", "masked", "splat", "blend"].map(|pass| skip.contains(pass));
             let one_program = std::env::var_os("P2GLES_ONE_PROG").is_some();
-            Renderer { gl, progs, vao, draws, ibos, order, textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris, clear: true, skip_passes, one_program }
+            Renderer { gl, progs, vao, vbo, shared_ibo, draws, ibos, order, visible_blended: Vec::new(), textures, lightmaps, alphas, white, fog, fog_color, no_cull: opts.no_cull, stats: Stats::default(), us, total_tris, clear: true, skip_passes, one_program }
         }
     }
 
@@ -509,29 +514,37 @@ impl Renderer {
             let mut cur_lm = u32::MAX - 1;
             let mut cur_alpha = u32::MAX - 1;
             let no_cull = self.no_cull;
-            // Blended draws, back to front.
-            let mut blended: Vec<usize> = self.order[3].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect();
-            blended.sort_by(|&a, &b| {
-                let da = (self.draws[a].centre - cam).length_squared();
-                let db = (self.draws[b].centre - cam).length_squared();
-                db.total_cmp(&da)
-            });
-            let lists: [Vec<usize>; 4] = [
-                self.order[0].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect(),
-                self.order[1].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect(),
-                self.order[2].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)).collect(),
-                blended,
-            ];
-            for (pi, list) in lists.iter().enumerate() {
+            // Blended draws need a sorted list. The other passes can cull as they draw.
+            if !self.skip_passes[Pass::Blended as usize] {
+                let blended = &mut self.visible_blended;
+                blended.clear();
+                blended.extend(self.order[Pass::Blended as usize].iter().copied().filter(|&i| visible(&self.draws[i], no_cull)));
+                blended.sort_by(|&a, &b| {
+                    let da = (self.draws[a].centre - cam).length_squared();
+                    let db = (self.draws[b].centre - cam).length_squared();
+                    db.total_cmp(&da)
+                });
+            }
+            let draw_range = if self.shared_ibo.is_some() && std::env::var_os("P2GLES_NO_RANGE").is_none() {
+                DRAW_RANGE_ELEMENTS.get().map(|&f| std::mem::transmute::<usize, DrawRangeElementsFn>(f))
+            } else {
+                None
+            };
+            for (pi, order) in self.order.iter().enumerate() {
                 if self.skip_passes[pi] {
                     continue;
                 }
+                let blended = pi == Pass::Blended as usize;
+                let list = if blended { &self.visible_blended } else { order };
                 let ui = (pi == 1 && !self.one_program) as usize;
                 let u = &self.us[ui];
                 gl.use_program(Some(self.progs[ui]));
                 let mut cur_state: Option<Key> = None;
                 for &di in list {
                     let d = &self.draws[di];
+                    if !blended && !visible(d, no_cull) {
+                        continue;
+                    }
                     let k = d.key;
                     // Render state.
                     if cur_state.map(|s| (s.pass, s.blend, s.two_sided)) != Some((k.pass, k.blend, k.two_sided)) {
@@ -597,14 +610,10 @@ impl Renderer {
                     if let Some(b) = self.ibos[di] {
                         gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b));
                         gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, 0);
+                    } else if let Some(draw_range) = draw_range {
+                        draw_range(glow::TRIANGLES, d.vmin, d.vmax, d.count, glow::UNSIGNED_INT, (d.first as usize * 4) as *const std::ffi::c_void);
                     } else {
-                    match DRAW_RANGE_ELEMENTS.get() {
-                        Some(&f) if std::env::var_os("P2GLES_NO_RANGE").is_none() => {
-                            let f: DrawRangeElementsFn = std::mem::transmute(f);
-                            f(glow::TRIANGLES, d.vmin, d.vmax, d.count, glow::UNSIGNED_INT, (d.first as usize * 4) as *const std::ffi::c_void);
-                        }
-                        _ => gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, d.first * 4),
-                    }
+                        gl.draw_elements(glow::TRIANGLES, d.count, glow::UNSIGNED_INT, d.first * 4);
                     }
                     stats.draws += 1;
                     stats.tris += d.count as u64 / 3;
@@ -612,6 +621,24 @@ impl Renderer {
             }
         }
         self.stats = stats;
+    }
+
+    /// Releases the level's GL objects while their context is current.
+    pub fn destroy(self) {
+        let gl = &self.gl;
+        unsafe {
+            gl.delete_vertex_array(self.vao);
+            gl.delete_buffer(self.vbo);
+            for ibo in self.ibos.into_iter().flatten().chain(self.shared_ibo) {
+                gl.delete_buffer(ibo);
+            }
+            for tex in self.textures.into_values().chain(self.lightmaps.into_values()).chain(self.alphas.into_values()).chain([self.white]) {
+                gl.delete_texture(tex);
+            }
+            for prog in self.progs {
+                gl.delete_program(prog);
+            }
+        }
     }
 
     pub fn read_pixels(&self, w: u32, h: u32) -> Vec<u8> {
