@@ -30,6 +30,28 @@ pub struct VmRig {
     pub sections: Vec<Entity>,
 }
 
+/// With p2gles, the world matrices of a skeleton's joints, kept on its first joint: p2gles reads
+/// them straight from here, so the joints need no Bevy transforms (see [`detach_joints`]).
+#[derive(Component, Default)]
+pub struct JointPose(pub Vec<Mat4>);
+
+/// With p2gles (`P2GAME_GLES_TRIM` key `joints`), takes the transforms off a freshly spawned
+/// skeleton's joints and gives its first joint a [`JointPose`]. Bevy's transform systems would
+/// otherwise visit every joint of every character (~15k entities) each frame, and the pose would
+/// go matrix -> Transform -> GlobalTransform -> matrix. Returns whether it did.
+pub(crate) fn detach_joints(commands: &mut Commands, joints: &[Entity]) -> bool {
+    if !crate::gles::trimmed("joints") {
+        return false;
+    }
+    for &j in joints {
+        commands.entity(j).remove::<(Transform, GlobalTransform, bevy::transform::components::TransformTreeChanged)>();
+    }
+    if let Some(&first) = joints.first() {
+        commands.entity(first).insert(JointPose(vec![Mat4::IDENTITY; joints.len()]));
+    }
+    true
+}
+
 /// Signature of an actor's `Skins` array (resource paths), to notice script skin swaps
 /// (burn victims, damage skins) without resolving materials every frame.
 fn skins_sig(vm: &Vm, a: ObjId) -> u64 {
@@ -186,6 +208,7 @@ pub fn spawn_new_rigs(
         };
         // The part's own AnimInstance is unused: the VM-side instance in GameHost drives the pose.
         let part = cache.spawn_part(commands, &host.lib, &rig, &[]);
+        detach_joints(commands, &part.joints);
         let sections = part.sections.clone();
         let e = commands.spawn((VmRig { actor: a, joints: part.joints, sections: part.sections }, Transform::IDENTITY, Visibility::default())).id();
         tracker.sections.insert(e, sections);
@@ -267,7 +290,7 @@ fn evaluate_poses(anims: &mut FastMap<ObjId, ActorAnim>, actors: &HashSet<ObjId>
 /// Poses rigs from their actors' animation instances and placement. With `views`, only the rigs one
 /// of those cameras could draw: the others are hidden and cost neither a pose nor their joint
 /// transforms (the script side reads bones through the instance, which computes them on demand).
-pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<&VmRig>, tfs: &mut Query<&mut Transform, Without<VmRig>>, vis: &mut Query<&mut Visibility, Without<VmRig>>) {
+pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<&VmRig>, tfs: &mut Query<&mut Transform, Without<VmRig>>, poses: &mut Query<&mut JointPose>, vis: &mut Query<&mut Visibility, Without<VmRig>>) {
     let c = c_mat();
     let ci = c.inverse();
     let mut anims = host.anims.borrow_mut();
@@ -306,6 +329,12 @@ pub fn pose_rigs(host: &GameHost, vm: &Vm, views: Option<&[View]>, rigs: &Query<
             continue;
         };
         let to_world = skel_actor_world(vm, r.actor, x.inst.skeleton.mesh_xform) * x.inst.skeleton.mesh_xform;
+        if let Some(mut pose) = r.joints.first().and_then(|&j| poses.get_mut(j).ok()) {
+            let to_bevy = c * to_world;
+            pose.0.clear();
+            pose.0.extend(x.inst.bone_matrices().iter().map(|m| to_bevy * *m * ci));
+            continue;
+        }
         for (e, m) in r.joints.iter().zip(x.inst.bone_matrices()) {
             if let Ok(mut tf) = tfs.get_mut(*e) {
                 *tf = Transform::from_matrix(c * to_world * *m * ci);

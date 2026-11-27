@@ -303,7 +303,7 @@ pub fn run(cfg: BootConfig, args: Args) {
             (
                 update_start,
                 (load_scene, crate::gles::classify_baked, tag_level_entities, tick_script, travel, merge_statics, crate::gles::bake_world, crate::ui::ui_frame, spawn_rigs, sync_transforms, dyn_meshes, frame_npc, fly_camera, crate::ui::follow_player, crate::cinema_view::apply_cinema_view, cam_override, pose_rigs, crate::ui::hide_own_body).chain(),
-                (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, perf_hide, update_end).chain(),
+                (crate::zone_fog::zone_fog, crate::debug::update_overlay, report, capture, mesh_census, archetype_census, perf_hide, update_end).chain(),
             )
                 .chain(),
         )
@@ -324,6 +324,7 @@ pub fn run(cfg: BootConfig, args: Args) {
     if std::env::var_os("P2GAME_RENDER_PROBE").is_some() {
         render_probe(&mut app);
     }
+    single_threaded_schedules(&mut app);
     app.run();
     crate::sampler::finish();
     crate::cursor::release_cursor();
@@ -829,6 +830,36 @@ fn perf_hide(mut q: Query<(&mut Visibility, Has<bevy::mesh::skinning::SkinnedMes
     }
 }
 
+/// `P2GAME_MESH_CENSUS=1`: every 5 s, the largest archetypes (what Bevy's per-frame transform and
+/// visibility systems iterate) with their component names.
+fn archetype_census(world: &World, time: Res<Time>, mut last: Local<f32>) {
+    if std::env::var_os("P2GAME_MESH_CENSUS").is_none() || time.elapsed_secs() - *last < 5.0 {
+        return;
+    }
+    *last = time.elapsed_secs();
+    // Release builds have no component names: match the ids of the types that matter here.
+    macro_rules! known {
+        ($($t:ty),* $(,)?) => { [$((world.component_id::<$t>(), stringify!($t))),*] };
+    }
+    use bevy::camera::visibility::*;
+    let known = known!(Transform, GlobalTransform, bevy::transform::components::TransformTreeChanged, ChildOf, Children, Visibility, InheritedVisibility, ViewVisibility, VisibilityClass, Mesh3d, Mesh2d, bevy::camera::primitives::Aabb, NoFrustumCulling, RenderLayers, VisibilityRange, bevy::mesh::skinning::SkinnedMesh, Name, LevelEntity, crate::rigs::VmRig, p2view::zones::ZoneTag, Node, Camera, bevy::light::PointLight, bevy::light::SpotLight);
+    let short = |ids: &[bevy::ecs::component::ComponentId]| {
+        let mut names: Vec<String> = known.iter().filter(|(id, _)| id.is_some_and(|id| ids.contains(&id))).map(|(_, n)| n.rsplit("::").next().unwrap_or(n).to_string()).collect();
+        let other = ids.len() - names.len();
+        if other > 0 {
+            names.push(format!("+{other}"));
+        }
+        names
+    };
+    let mut list: Vec<_> = world.archetypes().iter().filter(|a| !a.is_empty()).map(|a| (a.len(), short(a.components()))).collect();
+    list.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let total: u32 = list.iter().map(|a| a.0).sum();
+    println!("archetype census: {total} entities in {} archetypes", list.len());
+    for (n, names) in list.iter().take(20) {
+        println!("archetype census: {n:6} [{}]", names.join(", "));
+    }
+}
+
 /// `P2GAME_MESH_CENSUS=1`: every 5 s, counts the mesh entities visible to some camera, by kind.
 #[allow(clippy::type_complexity)]
 fn mesh_census(
@@ -1017,6 +1048,7 @@ fn pose_rigs(
     rigs: Query<&crate::rigs::VmRig>,
     mut tfs: ParamSet<(Query<&mut Transform, Without<crate::rigs::VmRig>>, Query<(&Transform, &Projection, &Camera, Option<&bevy::camera::visibility::RenderLayers>, Option<&DistanceFog>), With<Camera3d>>)>,
     mut vis: Query<&mut Visibility, Without<crate::rigs::VmRig>>,
+    mut poses: Query<&mut crate::rigs::JointPose>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let _t = SysTimer::new("pose_rigs");
@@ -1039,12 +1071,45 @@ fn pose_rigs(
             })
             .collect()
     });
-    crate::rigs::pose_rigs(&sim.game.host, &sim.game.world.vm, views.as_deref().filter(|v| !v.is_empty()), &rigs, &mut tfs.p0(), &mut vis);
+    crate::rigs::pose_rigs(&sim.game.host, &sim.game.world.vm, views.as_deref().filter(|v| !v.is_empty()), &rigs, &mut tfs.p0(), &mut poses, &mut vis);
 }
 
 thread_local! {
     /// Milliseconds spent per p2game Bevy system since the last report.
     static SYS_TIMES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `P2GAME_SINGLE_THREADED=First,PreUpdate,...` (or `all`): runs those main schedules with Bevy's
+/// single-threaded executor. On the board's four small cores the multi-threaded one can spend more
+/// on handing tiny systems to worker threads, and on the main thread waiting for them, than the
+/// parallelism gains.
+fn single_threaded_schedules(app: &mut App) {
+    use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel, SingleThreadedExecutor};
+    let Ok(list) = std::env::var("P2GAME_SINGLE_THREADED") else { return };
+    let labels: [(&str, InternedScheduleLabel); 12] = [
+        ("First", First.intern()),
+        ("PreUpdate", PreUpdate.intern()),
+        ("RunFixedMainLoop", RunFixedMainLoop.intern()),
+        ("FixedFirst", FixedFirst.intern()),
+        ("FixedPreUpdate", FixedPreUpdate.intern()),
+        ("FixedUpdate", FixedUpdate.intern()),
+        ("FixedPostUpdate", FixedPostUpdate.intern()),
+        ("FixedLast", FixedLast.intern()),
+        ("Update", Update.intern()),
+        ("SpawnScene", SpawnScene.intern()),
+        ("PostUpdate", PostUpdate.intern()),
+        ("Last", Last.intern()),
+    ];
+    let mut set = Vec::new();
+    for (name, label) in labels {
+        if list == "all" || list.split(',').any(|x| x.eq_ignore_ascii_case(name)) {
+            app.edit_schedule(label, |s| {
+                s.set_executor(SingleThreadedExecutor::new());
+            });
+            set.push(name);
+        }
+    }
+    println!("schedules on the single-threaded executor: {}", set.join(", "));
 }
 
 thread_local! {

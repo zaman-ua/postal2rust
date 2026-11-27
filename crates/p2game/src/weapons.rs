@@ -813,6 +813,7 @@ fn fp_weapon(
     mut vis: Query<&mut Visibility>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut canvas: ResMut<CanvasMeshes>,
+    mut poses: Query<&mut crate::rigs::JointPose>,
 ) {
     let draws: Vec<ActorDraw> = natives::with_context(|ctx| std::mem::take(&mut ctx.actor_draws));
     // Static mesh DrawActors (MapScreen arrow and trail, NewsScreen paper) go to canvas_meshes,
@@ -968,7 +969,10 @@ fn fp_weapon(
         };
         let part = cache.spawn_part(&mut commands, &host.lib, &rig, &[]);
         let root = commands.spawn((Transform::IDENTITY, Visibility::default())).id();
-        for &e in part.joints.iter().chain(&part.sections) {
+        // Detached joints have no transform to parent; the pose below is world space either way
+        // (the root stays at identity).
+        let detached = crate::rigs::detach_joints(&mut commands, &part.joints);
+        for &e in part.joints.iter().filter(|_| !detached).chain(&part.sections) {
             commands.entity(e).insert(ChildOf(root));
         }
         for &s in &part.sections {
@@ -995,6 +999,12 @@ fn fp_weapon(
         }
         let Some(x) = anims.get_mut(a) else { continue };
         let to_world = p2game::host::skel_actor_world(vm, *a, x.inst.skeleton.mesh_xform) * x.inst.skeleton.mesh_xform;
+        if let Some(mut pose) = r.joints.first().and_then(|&j| poses.get_mut(j).ok()) {
+            let to_bevy = cm * to_world;
+            pose.0.clear();
+            pose.0.extend(x.inst.bone_matrices().iter().map(|m| to_bevy * *m * ci));
+            continue;
+        }
         for (e, m) in r.joints.iter().zip(x.inst.bone_matrices()) {
             if let Ok(mut tf) = tfs.get_mut(*e) {
                 *tf = Transform::from_matrix(cm * to_world * *m * ci);

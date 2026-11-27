@@ -144,6 +144,7 @@ pub(super) struct SceneMeshes<'w, 's> {
     >,
     particles: Query<'w, 's, (&'static Mesh3d, &'static MeshMaterial3d<p2fx::ParticleMaterial>, &'static InheritedVisibility, Option<&'static RenderLayers>)>,
     joints: Query<'w, 's, &'static GlobalTransform>,
+    poses: Query<'w, 's, &'static crate::rigs::JointPose>,
     materials: Res<'w, Assets<StandardMaterial>>,
     baked_materials: Res<'w, Assets<p2view::baked::BakedMaterial>>,
     particle_materials: Res<'w, Assets<p2fx::ParticleMaterial>>,
@@ -201,9 +202,12 @@ impl SceneMeshes<'_, '_> {
             let layers = layers.unwrap_or(&default_layer);
             let model = transform.to_matrix();
             // The root sphere replaces the AABB and NoFrustumCulling marker on rigs.
-            let root = skin.and_then(|s| s.joints.first()).and_then(|&j| self.joints.get(j).ok());
+            let root = skin.and_then(|s| s.joints.first()).and_then(|&j| match self.poses.get(j) {
+                Ok(pose) => pose.0.first().map(|m| m.w_axis.truncate()),
+                Err(_) => self.joints.get(j).ok().map(|t| t.translation()),
+            });
             let (center, radius) = if let Some(root) = root {
-                (root.translation(), Some(3.0))
+                (root, Some(3.0))
             } else {
                 let center = model.transform_point3(aabb.map(|a| Vec3::from(a.center)).unwrap_or(Vec3::ZERO));
                 let radius = aabb.filter(|_| !no_culling && skin.is_none()).map(|a| {
@@ -279,6 +283,11 @@ impl SceneMeshes<'_, '_> {
             return Some(matrices.clone());
         }
         let inverse = self.inverse_bindposes.get(&skin.inverse_bindposes)?;
+        if let Ok(pose) = self.poses.get(key.0) {
+            let matrices: Arc<Vec<Mat4>> = Arc::new(pose.0.iter().zip(inverse.iter()).map(|(m, bind)| *m * *bind).collect());
+            cache.insert(key, matrices.clone());
+            return Some(matrices);
+        }
         let matrices: Arc<Vec<Mat4>> = Arc::new(skin.joints.iter().zip(inverse.iter()).map(|(&joint, bind)| self.joints.get(joint).map(|t| t.to_matrix()).unwrap_or(Mat4::IDENTITY) * *bind).collect());
         cache.insert(key, matrices.clone());
         Some(matrices)

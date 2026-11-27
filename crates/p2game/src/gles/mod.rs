@@ -120,15 +120,18 @@ fn init_gles(world: &mut World) {
 }
 
 /// Whether the p2gles frame drops the piece of Bevy's render bookkeeping named `key`
-/// (`P2GAME_GLES_TRIM`, a comma-separated list; default `mat,spec,wire,prev,statics`). Systems
-/// removed by [`trim_bevy_systems`]: `mat`, `spec`, `mesh`, `vis`, `prev` (motion-vector history).
+/// (`P2GAME_GLES_TRIM`, a comma-separated list; default `mat,spec,wire,prev,statics,joints,vis,light`). Systems
+/// removed by [`trim_bevy_systems`]: `mat`, `spec`, `mesh`, `vis`, `prev` (motion-vector history),
+/// `light` (Bevy's light clustering, shadow frusta and light visibility).
 /// `wire`: no `WireframePlugin`, whose wireframes only Bevy's renderer draws. `statics`: baked
 /// static mesh entities are despawned after the bake, so Bevy's visibility, bounds and
 /// asset-change systems stop visiting them (~2.8 ms of `PostUpdate` per frame on suburbs-3).
+/// `joints`: character joints carry no Bevy transform (`rigs::detach_joints`). `vis`: no per-view
+/// `ViewVisibility` (p2gles culls by itself and reads only `InheritedVisibility`).
 pub(crate) fn trimmed(key: &str) -> bool {
     static ONLY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     let only = ONLY.get_or_init(|| {
-        (enabled() && std::env::var_os("P2GAME_GLES_BEVY_FULL").is_none()).then(|| std::env::var("P2GAME_GLES_TRIM").unwrap_or_else(|_| "mat,spec,wire,prev,statics".into()))
+        (enabled() && std::env::var_os("P2GAME_GLES_BEVY_FULL").is_none()).then(|| std::env::var("P2GAME_GLES_TRIM").unwrap_or_else(|_| "mat,spec,wire,prev,statics,joints,vis,light".into()))
     });
     only.as_deref().is_some_and(|only| only.split(',').any(|x| x == key))
 }
@@ -158,6 +161,14 @@ fn trim_bevy_systems(world: &mut World) {
         if on("vis") {
             rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::CheckVisibility, world, RemoveSystemsOnly));
             rm(schedules.remove_systems_in_set(PostUpdate, VisibilitySystems::MarkNewlyHiddenEntitiesInvisible, world, RemoveSystemsOnly));
+        }
+        if on("light") {
+            // Clustering, shadow frusta and per-light mesh visibility for Bevy's lighting passes;
+            // p2gles lights from the light components themselves.
+            use bevy::light::SimulationLightSystems as L;
+            for set in [L::AssignLightsToClusters, L::UpdateDirectionalLightCascades, L::UpdateLightFrusta, L::CheckLightVisibility] {
+                rm(schedules.remove_systems_in_set(PostUpdate, set, world, RemoveSystemsOnly));
+            }
         }
         if on("mesh") {
             rm(schedules.remove_systems_in_set(PostUpdate, bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed, world, RemoveSystemsOnly));
