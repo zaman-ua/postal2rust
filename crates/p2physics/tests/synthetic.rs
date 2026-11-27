@@ -231,6 +231,40 @@ fn set_location_collision_size_and_base() {
     assert!(w.drain_events().contains(&Event::Detach { actor: q, other: p }));
 }
 
+#[test]
+fn base_index_tracks_direct_writes_removal_and_slot_reuse() {
+    let mut w = PhysWorld::new(level());
+    let base = w.add(Actor::new("Mover", Vec3::new(0.0, 0.0, 100.0)));
+    let first = w.add(Actor::new("First", Vec3::new(200.0, 0.0, 200.0)));
+    let second = w.add(Actor::new("Second", Vec3::new(300.0, 0.0, 300.0)));
+    w.set_base(second, Some(base));
+    w.get_mut(first).unwrap().base = Some(base);
+    assert_eq!(w.based_actors(base), vec![first, second]);
+
+    // Rotation rebuilds the index and carries both actors.
+    w.set_rotation(base, [0, 4096, 0]);
+    assert_eq!(w.get(first).unwrap().rotation[1], 4096);
+    assert_eq!(w.get(second).unwrap().rotation[1], 4096);
+
+    w.remove(first);
+    assert_eq!(w.based_actors(base), vec![second]);
+    let mut replacement = Actor::new("Replacement", Vec3::new(0.0, 300.0, 200.0));
+    replacement.base = Some(base);
+    assert_eq!(w.add(replacement), first);
+    assert_eq!(w.based_actors(base), vec![first, second]);
+
+    w.drain_events();
+    w.remove(base);
+    for id in [first, second] {
+        assert_eq!(w.get(id).unwrap().base, None);
+    }
+    let detached: Vec<_> = w.drain_events().into_iter().filter_map(|e| match e {
+        Event::Detach { actor, other } if actor == base => Some(other),
+        _ => None,
+    }).collect();
+    assert_eq!(detached, vec![first, second]);
+}
+
 /// A mesh "door" that slides along +X into a pawn standing in its path pushes the pawn.
 #[test]
 fn mover_pushes_pawn_and_carries_rider() {

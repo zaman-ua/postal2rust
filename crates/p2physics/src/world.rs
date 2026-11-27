@@ -28,6 +28,7 @@ use crate::types::{ActorId, Event, HitActor, MoveHit, Physics, TraceHit};
 use glam::Vec3;
 use p2collide::world::rotator_matrix;
 use p2collide::{Aabb, Shape, TraceFlags, World};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Distance kept between a moving cylinder and what it hits.
@@ -49,6 +50,9 @@ pub struct PhysWorld {
     pub level: Arc<World>,
     actors: Vec<Option<Actor>>,
     free: Vec<ActorId>,
+    /// Riders by base, ordered by actor slot to preserve movement and event order. Direct mutable
+    /// access to an actor invalidates the index because the caller can write its Base.
+    based: Option<BTreeMap<ActorId, Vec<ActorId>>>,
     pub(crate) hash: SpatialHash,
     pub(crate) events: Vec<Event>,
     moved: Vec<ActorId>,
@@ -77,6 +81,7 @@ impl PhysWorld {
             level,
             actors: Vec::new(),
             free: Vec::new(),
+            based: Some(BTreeMap::new()),
             hash: SpatialHash::new(512.0),
             events: Vec::new(),
             moved: Vec::new(),
@@ -99,6 +104,7 @@ impl PhysWorld {
         if let Some(t) = a.trace_collider.as_mut() {
             t.place(a.location, a.rotation);
         }
+        let base = a.base;
         let id = match self.free.pop() {
             Some(id) => {
                 self.actors[id as usize] = Some(a);
@@ -109,6 +115,7 @@ impl PhysWorld {
                 (self.actors.len() - 1) as ActorId
             }
         };
+        self.track_base(id, None, base);
         self.relink(id);
         self.update_volumes(id, false);
         self.update_touching(id);
@@ -128,6 +135,7 @@ impl PhysWorld {
             self.set_base(b, None);
         }
         if let Some(base) = self.actor(id).base {
+            self.track_base(id, Some(base), None);
             self.events.push(Event::Detach { actor: base, other: id });
         }
         self.hash.remove(id);
@@ -145,6 +153,12 @@ impl PhysWorld {
     /// Mutable access. After changing location, rotation, collision size or flags directly,
     /// call [`PhysWorld::relink`] (or use the movement natives instead).
     pub fn get_mut(&mut self, id: ActorId) -> Option<&mut Actor> {
+        self.based = None;
+        self.get_mut_with_unchanged_base(id)
+    }
+
+    /// For internal field updates that leave Base alone.
+    pub(crate) fn get_mut_with_unchanged_base(&mut self, id: ActorId) -> Option<&mut Actor> {
         self.actors.get_mut(id as usize).and_then(|a| a.as_mut())
     }
 
@@ -450,6 +464,15 @@ impl PhysWorld {
         if from == to && old_rot == new_rot {
             return;
         }
+        if self.based.is_none() {
+            let mut based: BTreeMap<_, Vec<_>> = BTreeMap::new();
+            for (id, actor) in self.actors.iter().enumerate() {
+                if let Some(base) = actor.as_ref().and_then(|a| a.base) {
+                    based.entry(base).or_default().push(id as ActorId);
+                }
+            }
+            self.based = Some(based);
+        }
         let based = self.based_actors(id);
         if based.is_empty() {
             return;
@@ -477,7 +500,28 @@ impl PhysWorld {
 
     /// Actors whose `Base` is `id`.
     pub fn based_actors(&self, id: ActorId) -> Vec<ActorId> {
+        if let Some(based) = &self.based {
+            return based.get(&id).cloned().unwrap_or_default();
+        }
         (0..self.actors.len() as ActorId).filter(|&i| self.actors[i as usize].as_ref().is_some_and(|a| a.base == Some(id))).collect()
+    }
+
+    fn track_base(&mut self, id: ActorId, old: Option<ActorId>, new: Option<ActorId>) {
+        let Some(based) = &mut self.based else { return };
+        if let Some(base) = old
+            && let Some(riders) = based.get_mut(&base)
+            && let Ok(index) = riders.binary_search(&id)
+        {
+            riders.remove(index);
+            if riders.is_empty() {
+                based.remove(&base);
+            }
+        }
+        if let Some(base) = new {
+            let riders = based.entry(base).or_default();
+            let index = riders.partition_point(|&rider| rider < id);
+            riders.insert(index, id);
+        }
     }
 
     fn begin_touch(&mut self, a: ActorId, b: ActorId) {
@@ -491,10 +535,10 @@ impl PhysWorld {
     }
 
     fn end_touch(&mut self, a: ActorId, b: ActorId) {
-        if let Some(x) = self.get_mut(a) {
+        if let Some(x) = self.get_mut_with_unchanged_base(a) {
             x.touching.retain(|&o| o != b);
         }
-        if let Some(x) = self.get_mut(b) {
+        if let Some(x) = self.get_mut_with_unchanged_base(b) {
             x.touching.retain(|&o| o != a);
         }
         self.events.push(Event::UnTouch { actor: a, other: b });
@@ -745,11 +789,7 @@ impl PhysWorld {
     /// `SetBase(NewBase)`: `Detach` on the old base, `Attach` on the new one, `BaseChange` on
     /// the actor.
     pub fn set_base(&mut self, id: ActorId, base: Option<ActorId>) {
-        let old = self.actor(id).base;
-        if old == base || base == Some(id) {
-            return;
-        }
-        self.actor_mut(id).base = base;
+        let Some(old) = self.set_base_silent(id, base) else { return };
         if let Some(o) = old.filter(|o| self.get(*o).is_some()) {
             self.events.push(Event::Detach { actor: o, other: id });
         }
@@ -757,6 +797,17 @@ impl PhysWorld {
             self.events.push(Event::Attach { actor: n, other: id });
         }
         self.events.push(Event::BaseChange { actor: id });
+    }
+
+    /// Updates a Base relationship without events, returning the old base if it changed.
+    pub(crate) fn set_base_silent(&mut self, id: ActorId, base: Option<ActorId>) -> Option<Option<ActorId>> {
+        let old = self.actor(id).base;
+        if old == base || base == Some(id) {
+            return None;
+        }
+        self.actor_mut(id).base = base;
+        self.track_base(id, old, base);
+        Some(old)
     }
 
     /// `SetPhysics(NewPhysics)`.

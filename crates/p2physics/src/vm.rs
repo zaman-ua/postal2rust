@@ -252,7 +252,7 @@ impl VmBridge {
 
     /// Associates an existing physics actor with a VM object.
     pub fn bind(&mut self, world: &mut PhysWorld, obj: ObjId, id: ActorId) {
-        if let Some(a) = world.get_mut(id) {
+        if let Some(a) = world.get_mut_with_unchanged_base(id) {
             a.user = obj as u64;
         }
         self.to_phys.insert(obj, id);
@@ -430,7 +430,7 @@ impl VmBridge {
             let o = Obj { slots: &vm.objects[obj].slots, s: &s };
             (o.obj(P::Base).and_then(|b| self.phys(b)), o.obj(P::Owner).and_then(|b| self.phys(b)))
         };
-        let Some(a) = world.get_mut(id) else { return };
+        let Some(a) = world.get_mut_with_unchanged_base(id) else { return };
         let before = (a.location, a.rotation, a.collision_radius, a.collision_height);
         let (v_before, phys_before) = (a.velocity, a.physics);
         self.read_into_with(vm, obj, a, &s);
@@ -441,15 +441,13 @@ impl VmBridge {
         self.pushed_physics.borrow_mut().insert(obj, a.physics as u8);
         // ... and so do all the fields read above: a sync point for `pull_dynamic`.
         self.sync.borrow_mut().insert(obj, SyncPoint::new(vm.objects[obj].slots.generation(), self.epoch.get(), a));
-        if base != Some(id) {
-            a.base = base;
-        }
         // Script ownership (e.g. a pawn's head, spawned with the pawn as Owner): traces from the
         // owner skip it, so a shooter's instant-hit traces don't hit their own head.
         if owner != Some(id) {
             a.owner = owner;
         }
         let after = (a.location, a.rotation, a.collision_radius, a.collision_height);
+        world.set_base_silent(id, base);
         if before != after {
             world.relink(id);
         }
