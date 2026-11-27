@@ -18,7 +18,8 @@
 //! - Nested modifiers compose from the outside in: the outermost transforms the canvas UV first.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use upkg::Package;
 use upkg::library::{Library, Obj};
 use upkg::material::{AlphaOp, ColorOp, FadeType, FrameBufferBlending, Material, OscillationType, OutputBlending, RotationType, read_material};
 
@@ -150,54 +151,74 @@ const STY_TRANSLUCENT: u8 = 3;
 const STY_MODULATED: u8 = 4;
 const STY_ALPHA: u8 = 5;
 
+struct CanvasLookup {
+    class: Option<String>,
+    // A map can replace a package of the same name during travel.
+    package: Weak<Package>,
+    export: Option<usize>,
+}
+
 /// Parses and caches material objects and texture sizes.
 pub struct MaterialDb {
     pub lib: Arc<Library>,
     cache: Mutex<HashMap<(String, usize), Option<Arc<Material>>>>,
+    lookups: Mutex<HashMap<String, Vec<CanvasLookup>>>,
     sizes: Mutex<HashMap<(String, usize), (i32, i32)>>,
 }
 
 impl MaterialDb {
     pub fn new(lib: Arc<Library>) -> Self {
-        Self { lib, cache: Mutex::new(HashMap::new()), sizes: Mutex::new(HashMap::new()) }
+        Self { lib, cache: Mutex::new(HashMap::new()), lookups: Mutex::new(HashMap::new()), sizes: Mutex::new(HashMap::new()) }
     }
 
     /// Finds an object by dotted name: "Package.Name" or "Package.Group.Name" (class optional).
     /// When the exact group chain does not match, any export of that name in the package is
     /// accepted (script often names objects without their group, e.g. `P2Fonts.Plain24`).
     pub fn find(&self, full: &str, class: Option<&str>) -> Option<Obj> {
-        self.find_exact(full, class).or_else(|| {
-            let (pkg, rest) = full.split_once('.')?;
-            let leaf = rest.rsplit('.').next()?;
-            let p = self.lib.package(pkg)?;
-            let export = (0..p.exports.len())
-                .find(|&i| p.name(p.exports[i].name).eq_ignore_ascii_case(leaf) && class.is_none_or(|c| p.export_class(i).eq_ignore_ascii_case(c)) && !p.export_class(i).eq_ignore_ascii_case("Package"))?;
-            Some(Obj { pkg: p, export })
-        })
+        let (name, path) = full.split_once('.')?;
+        let pkg = self.lib.package(name)?;
+        if let Some(export) = self.lookups.lock().unwrap().get(full).and_then(|entries| {
+            entries.iter().find(|entry| entry.class.as_deref() == class && entry.package.as_ptr() == Arc::as_ptr(&pkg)).map(|entry| entry.export)
+        }) {
+            return export.map(|export| Obj { pkg, export });
+        }
+
+        let export = Self::find_export(&pkg, path, class);
+        let mut lookups = self.lookups.lock().unwrap();
+        let entries = lookups.entry(full.to_owned()).or_default();
+        let current = CanvasLookup { class: class.map(str::to_owned), package: Arc::downgrade(&pkg), export };
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.class.as_deref() == class) {
+            *entry = current;
+        } else {
+            entries.push(current);
+        }
+        export.map(|export| Obj { pkg, export })
     }
 
-    fn find_exact(&self, full: &str, class: Option<&str>) -> Option<Obj> {
-        let mut parts: Vec<&str> = full.split('.').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-        let pkg = self.lib.package(parts.remove(0))?;
-        let leaf = parts.pop()?;
-        let groups: Vec<&str> = parts.into_iter().rev().collect();
-        let export = (0..pkg.exports.len()).find(|&i| {
-            if !pkg.name(pkg.exports[i].name).eq_ignore_ascii_case(leaf) || class.is_some_and(|c| !pkg.export_class(i).eq_ignore_ascii_case(c)) {
-                return false;
+    fn find_export(pkg: &Package, path: &str, class: Option<&str>) -> Option<usize> {
+        let mut parts = path.rsplit('.');
+        let leaf = parts.next()?;
+        let mut fallback = None;
+        for (i, export) in pkg.exports.iter().enumerate() {
+            if !pkg.name(export.name).eq_ignore_ascii_case(leaf) || class.is_some_and(|c| !pkg.export_class(i).eq_ignore_ascii_case(c)) {
+                continue;
             }
-            let mut outer = pkg.exports[i].outer;
-            for g in &groups {
-                match outer {
-                    upkg::ObjRef::Export(o) if pkg.name(pkg.exports[o].name).eq_ignore_ascii_case(g) => outer = pkg.exports[o].outer,
-                    _ => return false,
+            let mut outer = export.outer;
+            let exact = parts.clone().all(|group| match outer {
+                upkg::ObjRef::Export(o) if pkg.name(pkg.exports[o].name).eq_ignore_ascii_case(group) => {
+                    outer = pkg.exports[o].outer;
+                    true
                 }
+                _ => false,
+            });
+            if exact {
+                return Some(i);
             }
-            true
-        })?;
-        Some(Obj { pkg, export })
+            if fallback.is_none() && !pkg.export_class(i).eq_ignore_ascii_case("Package") {
+                fallback = Some(i);
+            }
+        }
+        fallback
     }
 
     pub fn material(&self, obj: &Obj) -> Option<Arc<Material>> {
@@ -597,6 +618,54 @@ impl crate::canvas::MaterialSizer for MaterialDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_cache_respects_group_class_and_package_replacement() {
+        use upkg::ObjRef::{Export, Null};
+        use upkg::package::Export as PackageExport;
+
+        let dir = std::env::temp_dir().join(format!("p2canvas-lookup-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Textures")).unwrap();
+        std::fs::write(dir.join("Textures/test.utx"), []).unwrap();
+        let library = Arc::new(Library::new(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let make_export = |name, outer, class| PackageExport { name, outer, class, super_: Null, flags: 0, size: 0, offset: 0 };
+        let package = || Package {
+            path: dir.join("Textures/test.utx"),
+            name: "test".into(),
+            version: 118,
+            licensee: 0,
+            flags: 0,
+            names: ["GroupA", "GroupB", "Texture", "Font", "Logo"].map(str::to_owned).to_vec(),
+            imports: Vec::new(),
+            exports: vec![
+                make_export(0, Null, Null),
+                make_export(1, Null, Null),
+                make_export(2, Null, Null),
+                make_export(3, Null, Null),
+                make_export(4, Export(0), Export(2)),
+                make_export(4, Export(1), Export(2)),
+            ],
+            data: Vec::new().into(),
+        };
+
+        library.insert(Arc::new(package()));
+        let db = MaterialDb::new(library.clone());
+        let exact = "test.groupb.logo";
+        let fallback = "test.missing.logo";
+        assert_eq!(db.find(exact, None).unwrap().export, 5);
+        assert_eq!(db.find(fallback, Some("Texture")).unwrap().export, 4);
+        assert!(db.find(exact, Some("Font")).is_none());
+        assert_eq!(db.find(exact, None).unwrap().export, 5);
+
+        let mut replacement = package();
+        replacement.exports.swap(4, 5);
+        replacement.exports[4].class = Export(3);
+        library.insert(Arc::new(replacement));
+        assert_eq!(db.find(exact, None).unwrap().export, 4);
+        assert_eq!(db.find(exact, Some("Font")).unwrap().export, 4);
+        assert_eq!(db.find(fallback, Some("Texture")).unwrap().export, 5);
+    }
 
     #[test]
     fn xform_compose_order() {
