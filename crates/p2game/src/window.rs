@@ -1079,13 +1079,18 @@ thread_local! {
     static SYS_TIMES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// `P2GAME_SINGLE_THREADED=First,PreUpdate,...` (or `all`): runs those main schedules with Bevy's
-/// single-threaded executor. On the board's four small cores the multi-threaded one can spend more
-/// on handing tiny systems to worker threads, and on the main thread waiting for them, than the
-/// parallelism gains.
+/// Runs main schedules on Bevy's single-threaded executor: `P2GAME_SINGLE_THREADED=First,PreUpdate,...`,
+/// `all` or `none`; with p2gles the default is `all`. On the board's four small cores the
+/// multi-threaded executor spent more on handing tiny systems to worker threads, and the main
+/// thread more on waiting for them, than the parallelism gained (suburbs-3: 34.6 -> 32.2 ms per
+/// frame). Work that is worth spreading (character poses) uses the compute pool itself.
 fn single_threaded_schedules(app: &mut App) {
     use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel, SingleThreadedExecutor};
-    let Ok(list) = std::env::var("P2GAME_SINGLE_THREADED") else { return };
+    let default = if crate::gles::enabled() { "all" } else { "none" };
+    let list = std::env::var("P2GAME_SINGLE_THREADED").unwrap_or_else(|_| default.into());
+    if list == "none" {
+        return;
+    }
     let labels: [(&str, InternedScheduleLabel); 12] = [
         ("First", First.intern()),
         ("PreUpdate", PreUpdate.intern()),
